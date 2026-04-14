@@ -1,0 +1,112 @@
+[
+  {
+    "asset_id": "forest_ambient_bed",
+    "label": "Forest ambient bed",
+    "category": "ambient",
+    "description": "Soft continuous forest bed with light leaves",
+    "mock_file_path": "mock://forest_ambient_bed.wav",
+    "default_duration_sec": 60,
+    "default_volume": 0.72,
+    "spatial_profile": "broad_front",
+    "tags": ["forest", "calm", "continuous"]
+  },
+  {
+    "asset_id": "light_wind_through_leaves",
+    "label": "Light wind through leaves",
+    "category": "ambient",
+    "description": "Gentle wind moving branches",
+    "mock_file_path": "mock://light_wind.wav",
+    "default_duration_sec": 45,
+    "default_volume": 0.55,
+    "spatial_profile": "slow_pan",
+    "tags": ["forest", "wind", "motion"]
+  },
+  {
+    "asset_id": "distant_birds_left",
+    "label": "Distant birds (left)",
+    "category": "event",
+    "description": "Sparse distant bird calls on the left side",
+    "mock_file_path": "mock://distant_birds_left.wav",
+    "default_duration_sec": 12,
+    "default_volume": 0.45,
+    "spatial_profile": "left_far",
+    "tags": ["forest", "birds", "left"]
+  },
+  {
+    "asset_id": "soft_stream_front",
+    "label": "Soft stream front",
+    "category": "ambient",
+    "description": "Small stream flowing in front",
+    "mock_file_path": "mock://soft_stream_front.wav",
+    "default_duration_sec": 60,
+    "default_volume": 0.6,
+    "spatial_profile": "front_center",
+    "tags": ["water", "forest", "grounding"]
+  },
+  {
+    "asset_id": "branch_creak_far",
+    "label": "Branch creak far",
+    "category": "event",
+    "description": "Occasional branch creaks to suggest space",
+    "mock_file_path": "mock://branch_creak_far.wav",
+    "default_duration_sec": 6,
+    "default_volume": 0.35,
+    "spatial_profile": "far_random",
+    "tags": ["forest", "texture", "subtle"]
+  },
+  {
+    "asset_id": "guided_narration_neutral",
+    "label": "Guided narration neutral",
+    "category": "narration",
+    "description": "Soft neutral narration voice",
+    "mock_file_path": "mock://guided_narration_neutral.wav",
+    "default_duration_sec": 30,
+    "default_volume": 0.5,
+    "spatial_profile": "front_close",
+    "tags": ["voice", "guidance"]
+  },
+  {
+    "asset_id": "guided_narration_grounding",
+    "label": "Guided narration grounding",
+    "category": "narration",
+    "description": "Grounding narration for distraction moments",
+    "mock_file_path": "mock://guided_narration_grounding.wav",
+    "default_duration_sec": 25,
+    "default_volume": 0.55,
+    "spatial_profile": "front_center",
+    "tags": ["voice", "grounding"]
+  },
+  {
+    "asset_id": "ocean_waves_front",
+    "label": "Ocean waves front",
+    "category": "ambient",
+    "description": "Gentle ocean waves lapping in front",
+    "mock_file_path": "mock://ocean_waves_front.wav",
+    "default_duration_sec": 60,
+    "default_volume": 0.65,
+    "spatial_profile": "front_wide",
+    "tags": ["ocean", "calm", "continuous"]
+  },
+  {
+    "asset_id": "seagull_overhead",
+    "label": "Seagull overhead",
+    "category": "event",
+    "description": "Occasional soft seagull overhead",
+    "mock_file_path": "mock://seagull_overhead.wav",
+    "default_duration_sec": 5,
+    "default_volume": 0.4,
+    "spatial_profile": "overhead",
+    "tags": ["ocean", "birds", "cue"]
+  },
+  {
+    "asset_id": "soft_footsteps_ground",
+    "label": "Soft footsteps on ground",
+    "category": "event",
+    "description": "Slow soft footsteps to anchor attention",
+    "mock_file_path": "mock://soft_footsteps_ground.wav",
+    "default_duration_sec": 8,
+    "default_volume": 0.38,
+    "spatial_profile": "front_near",
+    "tags": ["grounding", "cue", "motion"]
+  }
+]

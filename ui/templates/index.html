@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>EEG-Adaptive Spatial Audio MVP</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 0; }
+    header { padding: 16px; background: #1e293b; display: flex; justify-content: space-between; align-items: center; }
+    main { padding: 16px; display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
+    section { background: #111827; padding: 12px; border-radius: 8px; border: 1px solid #1f2937; }
+    h2 { margin-top: 0; font-size: 16px; letter-spacing: 0.02em; }
+    form { display: flex; gap: 8px; }
+    input[type=text] { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1221; color: #e2e8f0; }
+    button { padding: 8px 12px; border: none; border-radius: 6px; background: #10b981; color: #0f172a; cursor: pointer; font-weight: 600; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; border: 1px solid #334155; margin-right: 6px; margin-bottom: 4px; font-size: 12px; }
+    pre { background: #0b1221; padding: 8px; border-radius: 8px; border: 1px solid #1f2937; color: #e2e8f0; max-height: 320px; overflow: auto; }
+    .active { border-color: #10b981; color: #10b981; }
+    .flash { margin-bottom: 8px; color: #fbbf24; }
+    .panel-title { font-size: 13px; text-transform: uppercase; color: #94a3b8; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <div style="font-size:18px; font-weight:700;">EEG-Adaptive Spatial Audio MVP</div>
+    <div style="font-size:12px; color:#94a3b8;">Prompt → Scene → EEG windows → Adapted Unity JSON</div>
+  </div>
+  <div style="font-size:12px; color:#94a3b8;">EEG file: {{ eeg_path }}</div>
+</header>
+<main>
+  <section style="grid-column: 1 / span 2;">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash">{{ messages[-1] }}</div>
+      {% endif %}
+    {% endwith %}
+    <form action="/bootstrap" method="post">
+      <input type="text" name="prompt" placeholder="e.g., I want a forest scene" value="{{ prompt or '' }}" />
+      <button type="submit">Bootstrap scene</button>
+    </form>
+    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+      <form action="/step" method="post">
+        <button type="submit">Next EEG window</button>
+      </form>
+      <div style="font-size:12px; color:#94a3b8;">Window {{ current_idx + 1 if current_idx>=0 else 0 }} / {{ total_windows }}</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Current Scene</h2>
+    {% if scene %}
+      <div class="panel-title">Scene Type</div>
+      <div class="pill">{{ scene.scene_type }}</div>
+      <div class="panel-title">Atmosphere</div>
+      <div>{{ scene.atmosphere }}</div>
+      <div class="panel-title">Narration</div>
+      <div style="font-size:12px; color:#cbd5e1;">{{ scene.narration_script }}</div>
+      <div class="panel-title">Unity JSON</div>
+      <pre>{{ scene | tojson(indent=2) }}</pre>
+    {% else %}
+      <div>Bootstrap to generate an initial scene.</div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>EEG Analysis</h2>
+    {% if current_payload %}
+      <div class="panel-title">Window ID</div>
+      <div class="pill">{{ current_payload.window_id }}</div>
+      <div class="panel-title">Rule state</div>
+      <div class="pill">{{ current_payload.current_rule_state }}</div>
+      <div class="panel-title">Key ratios</div>
+      <div style="font-size:12px;">α/β: {{ '%.2f' % current_payload.current_features['alpha_beta_ratio'] if current_payload.current_features['alpha_beta_ratio'] is not none else '–' }}</div>
+      <div class="panel-title">Payload</div>
+      <pre>{{ current_payload | tojson(indent=2) }}</pre>
+    {% else %}
+      <div>Click Next EEG window after bootstrapping.</div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Sound Library</h2>
+    <div class="panel-title">Available assets</div>
+    <div>
+      {% set active = scene.world_state.active_sources if scene and scene.world_state else [] %}
+      {% for asset in library %}
+        <div class="pill {% if asset.asset_id in active %}active{% endif %}">{{ asset.asset_id }}</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Active Sources</h2>
+    {% if scene %}
+      {% for src in scene.sources %}
+        <div class="panel-title">{{ src.source_id }}</div>
+        <div style="font-size:12px; color:#cbd5e1;">vol {{ src.volume }} | pos {{ src.position }}</div>
+      {% endfor %}
+    {% else %}
+      <div>None yet.</div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Adaptation Rationale</h2>
+    {% if mental_history %}
+      {% for item in mental_history %}
+        <div style="margin-bottom:6px; font-size:12px;">Window {{ item.window_id }}: {{ item.rule_state }} → {{ item.llm_state }} ({{ item.trend }}) conf {{ '%.2f' % item.confidence if item.confidence else '' }}</div>
+      {% endfor %}
+    {% else %}
+      <div>Steps will appear here.</div>
+    {% endif %}
+  </section>
+</main>
+</body>
+</html>
