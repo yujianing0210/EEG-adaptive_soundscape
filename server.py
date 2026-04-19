@@ -1,99 +1,57 @@
 import asyncio
 import websockets
 import json
+import os
+import time
 
-# =========================
-# 🔥 模拟 LLM 输出（以后替换）
-# =========================
-def get_llm_output():
-    return {
-        "sounds": [
-            {
-                "id": "bird_1",
-                "clip": "bird",
-                "position": [2, 0, 0],
-                "volume": 0.5,
-                "motion": {
-                    "type": "circle",
-                    "speed": 0.5,
-                    "radius": 2.0
-                }
-            },
-            {
-                "id": "wind_1",
-                "clip": "wind",
-                "position": [-2, 1, 0],
-                "volume": 0.3
-            }
-        ]
-    }
+from translator import scene_to_commands
 
-# =========================
-# 🔥 WebSocket Server
-# =========================
+# 📂 她的输出目录（改成你实际路径）
+SCENE_FILE = "D:\\Users\\Teres\\OneDrive\\OneDrive - Harvard University\\embodied_arch\\json_to_unity\\outputs\\current_unity_scene.json"
+
+prev_ids = set()
+
+
+def load_scene():
+    if not os.path.exists(SCENE_FILE):
+        print("❌ Scene file not found")
+        return None
+
+    with open(SCENE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 async def handler(websocket):
-    print("✅ Unity connected!")
+    global prev_ids
 
-    created_ids = set()   # 🔥 记录哪些已经创建过
+    print("✅ Unity connected")
 
     while True:
         try:
-            llm_data = get_llm_output()
+            scene = load_scene()
 
-            commands = []
+            if scene is None:
+                await asyncio.sleep(1)
+                continue
 
-            for sound in llm_data["sounds"]:
-                sid = sound["id"]
+            command_json, prev_ids = scene_to_commands(scene, prev_ids)
 
-                # 🟢 第一次 → create
-                if sid not in created_ids:
-                    commands.append({
-                        "action": "create",
-                        "id": sid,
-                        "clip": sound["clip"],
-                        "position": sound["position"],
-                        "volume": sound["volume"],
-                        "motion": sound.get("motion", {})
-                    })
-                    created_ids.add(sid)
+            await websocket.send(json.dumps(command_json))
 
-                # 🔵 后续 → update
-                else:
-                    commands.append({
-                        "action": "update",
-                        "id": sid,
-                        "position": sound["position"],
-                        "volume": sound["volume"]
-                    })
+            print("📤 Sent:", command_json)
 
-            # 🔴 删除逻辑（如果LLM不再返回某个sound）
-            current_ids = set([s["id"] for s in llm_data["sounds"]])
-            for sid in list(created_ids):
-                if sid not in current_ids:
-                    commands.append({
-                        "action": "delete",
-                        "id": sid
-                    })
-                    created_ids.remove(sid)
-
-            # 📤 发给 Unity
-            await websocket.send(json.dumps({"commands": commands}))
-
-            print("📤 Sent:", commands)
-
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)  # 👈 控制更新频率
 
         except Exception as e:
             print("❌ Error:", e)
             break
 
-# =========================
-# 🔥 启动服务器
-# =========================
+
 async def main():
     async with websockets.serve(handler, "localhost", 8765):
         print("🚀 Server running on ws://localhost:8765")
         await asyncio.Future()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

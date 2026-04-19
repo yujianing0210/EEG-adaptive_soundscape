@@ -7,8 +7,11 @@ public class WebSocketManager : MonoBehaviour
 {
     WebSocket websocket;
 
+    // 🎯 所有声音对象
     Dictionary<string, GameObject> soundObjects = new Dictionary<string, GameObject>();
-    Dictionary<string, MotionData> motions = new Dictionary<string, MotionData>();
+
+    // 🎯 存 motion
+    Dictionary<string, MotionData> motionMap = new Dictionary<string, MotionData>();
 
     async void Start()
     {
@@ -27,6 +30,16 @@ public class WebSocketManager : MonoBehaviour
             ProcessCommand(json);
         };
 
+        websocket.OnError += (e) =>
+        {
+            Debug.LogError("❌ WebSocket Error: " + e);
+        };
+
+        websocket.OnClose += (e) =>
+        {
+            Debug.Log("🔌 Connection closed");
+        };
+
         await websocket.Connect();
     }
 
@@ -41,21 +54,24 @@ public class WebSocketManager : MonoBehaviour
             // =========================
             if (cmd.action == "create")
             {
-                if (soundObjects.ContainsKey(cmd.id)) continue;
+                if (soundObjects.ContainsKey(cmd.id))
+                    continue;
 
                 GameObject obj = new GameObject(cmd.id);
 
-                // 可视化
+                // 可视化球
                 GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 sphere.transform.SetParent(obj.transform);
+                sphere.transform.localPosition = Vector3.zero;
                 sphere.transform.localScale = Vector3.one * 0.3f;
 
                 AudioSource audio = obj.AddComponent<AudioSource>();
+
                 AudioClip clip = Resources.Load<AudioClip>(cmd.clip);
 
                 if (clip == null)
                 {
-                    Debug.LogError("❌ Audio NOT FOUND: " + cmd.clip);
+                    Debug.LogError("❌ Audio not found: " + cmd.clip);
                     continue;
                 }
 
@@ -65,13 +81,18 @@ public class WebSocketManager : MonoBehaviour
                 audio.volume = cmd.volume;
                 audio.Play();
 
-                obj.transform.position = ToVector3(cmd.position);
+                obj.transform.position = new Vector3(
+                    cmd.position[0],
+                    cmd.position[1],
+                    cmd.position[2]
+                );
 
                 soundObjects[cmd.id] = obj;
 
+                // 🔥 存 motion
                 if (cmd.motion != null)
                 {
-                    motions[cmd.id] = cmd.motion;
+                    motionMap[cmd.id] = cmd.motion;
                 }
             }
 
@@ -81,14 +102,28 @@ public class WebSocketManager : MonoBehaviour
             if (cmd.action == "update" && soundObjects.ContainsKey(cmd.id))
             {
                 GameObject obj = soundObjects[cmd.id];
-                if (obj == null) continue;
 
-                obj.transform.position = ToVector3(cmd.position);
+                // 更新位置（如果没有 motion 就用）
+                if (cmd.position != null && (cmd.motion == null || cmd.motion.type == "none"))
+                {
+                    obj.transform.position = new Vector3(
+                        cmd.position[0],
+                        cmd.position[1],
+                        cmd.position[2]
+                    );
+                }
 
+                // 更新音量
                 AudioSource audio = obj.GetComponent<AudioSource>();
                 if (audio != null)
                 {
                     audio.volume = cmd.volume;
+                }
+
+                // 更新 motion
+                if (cmd.motion != null)
+                {
+                    motionMap[cmd.id] = cmd.motion;
                 }
             }
 
@@ -100,37 +135,32 @@ public class WebSocketManager : MonoBehaviour
                 Destroy(soundObjects[cmd.id]);
                 soundObjects.Remove(cmd.id);
 
-                if (motions.ContainsKey(cmd.id))
+                if (motionMap.ContainsKey(cmd.id))
                 {
-                    motions.Remove(cmd.id);
+                    motionMap.Remove(cmd.id);
                 }
             }
         }
     }
 
+    // =========================
+    // 🎯 MOTION SYSTEM（核心🔥）
+    // =========================
     void Update()
     {
-        if (websocket != null)
-        {
-            websocket.DispatchMessageQueue();
-        }
+        float t = Time.time;
 
-        // =========================
-        // 🔥 MOTION SYSTEM
-        // =========================
-        foreach (var pair in motions)
+        foreach (var pair in motionMap)
         {
             string id = pair.Key;
             MotionData m = pair.Value;
 
             if (!soundObjects.ContainsKey(id)) continue;
+            if (m == null) continue;
 
             GameObject obj = soundObjects[id];
-            if (obj == null) continue;
 
-            float t = Time.time;
-
-            // 🟢 CIRCLE
+            // 🌀 Circle
             if (m.type == "circle")
             {
                 float x = Mathf.Cos(t * m.speed) * m.radius;
@@ -138,16 +168,19 @@ public class WebSocketManager : MonoBehaviour
                 obj.transform.position = new Vector3(x, 0, z);
             }
 
-            // 🧘 BREATHING
+            // 🌊 Breathing（你现在最常用）
             else if (m.type == "breathing")
             {
-                float r = Mathf.Lerp(m.minRadius, m.maxRadius,
-                    (Mathf.Sin(t * m.speed) + 1) / 2);
+                float r = Mathf.Lerp(
+                    m.minRadius,
+                    m.maxRadius,
+                    (Mathf.Sin(t * m.speed) + 1) / 2
+                );
 
-                obj.transform.position = new Vector3(0, 0, r);
+                obj.transform.position = new Vector3(r, 0, r);
             }
 
-            // 🎲 RANDOM
+            // 🎲 Random jitter
             else if (m.type == "random")
             {
                 obj.transform.position += new Vector3(
@@ -157,70 +190,19 @@ public class WebSocketManager : MonoBehaviour
                 );
             }
 
-            // 🌀 SPIRAL
-            else if (m.type == "spiral")
-            {
-                float r = m.radius + t * 0.2f;
-                float x = Mathf.Cos(t * m.speed) * r;
-                float z = Mathf.Sin(t * m.speed) * r;
-
-                obj.transform.position = new Vector3(x, 0, z);
-            }
-
-            // 🛤 PATH
-            else if (m.type == "path")
-            {
-                if (m.path != null && m.path.Count > 1)
-                {
-                    int index = Mathf.FloorToInt(t * m.speed) % m.path.Count;
-                    Vector3 target = ToVector3(m.path[index]);
-
-                    obj.transform.position = Vector3.Lerp(
-                        obj.transform.position,
-                        target,
-                        Time.deltaTime * 2f
-                    );
-                }
-            }
-
-            // 🐦 SWARM
-            else if (m.type == "swarm")
-            {
-                Vector3 center = Vector3.zero;
-
-                Vector3 randomOffset = new Vector3(
-                    UnityEngine.Random.Range(-0.05f, 0.05f),
-                    0,
-                    UnityEngine.Random.Range(-0.05f, 0.05f)
-                );
-
-                Vector3 toCenter = (center - obj.transform.position) * 0.01f;
-
-                obj.transform.position += randomOffset + toCenter;
-            }
-
-            // 🌊 FIELD
-            else if (m.type == "field")
-            {
-                float x = obj.transform.position.x;
-                float z = obj.transform.position.z;
-
-                float dx = Mathf.PerlinNoise(x + t * 0.1f, z) - 0.5f;
-                float dz = Mathf.PerlinNoise(x, z + t * 0.1f) - 0.5f;
-
-                obj.transform.position += new Vector3(dx, 0, dz) * 0.1f;
-            }
+            // ⛔ none（不动）
         }
     }
 
-    Vector3 ToVector3(float[] arr)
+    void OnApplicationQuit()
     {
-        if (arr == null || arr.Length < 3) return Vector3.zero;
-        return new Vector3(arr[0], arr[1], arr[2]);
+        websocket.Close();
     }
 }
 
-#region DATA STRUCTURES
+// =========================
+// 📦 JSON STRUCTURES
+// =========================
 
 [Serializable]
 public class CommandWrapper
@@ -243,13 +225,10 @@ public class Command
 public class MotionData
 {
     public string type;
+
     public float speed = 1f;
     public float radius = 2f;
 
     public float minRadius = 1f;
     public float maxRadius = 3f;
-
-    public List<float[]> path;
 }
-
-#endregion
