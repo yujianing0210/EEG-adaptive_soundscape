@@ -1,3 +1,5 @@
+import os
+
 # =========================
 # 🎯 主函数
 # =========================
@@ -76,9 +78,8 @@ def extract_clip(source):
     if not asset:
         return None
 
-    # 👉 mock://light_wind.wav → light_wind
-    filename = asset.split("/")[-1]
-    clip_name = filename.replace(".wav", "")
+    filename = os.path.basename(asset)
+    clip_name, _ = os.path.splitext(filename)
 
     return clip_name
 

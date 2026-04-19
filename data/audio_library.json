@@ -1,0 +1,178 @@
+[
+  {
+    "asset_id": "forest_bed_1",
+    "label": "Forest bed 1",
+    "category": "ambient",
+    "description": "A soft forest bed with wide atmospheric texture.",
+    "asset_ref": "audio_lib/forest_bed_1.mp3",
+    "default_duration_sec": 60,
+    "default_volume": 0.65,
+    "spatial_profile": "broad_front",
+    "tags": ["forest", "ambient", "bed", "soft"]
+  },
+  {
+    "asset_id": "forest_bed_2",
+    "label": "Forest bed 2",
+    "category": "ambient",
+    "description": "A second forest bed track with gentle organic movement.",
+    "asset_ref": "audio_lib/forest_bed_2.mp3",
+    "default_duration_sec": 60,
+    "default_volume": 0.68,
+    "spatial_profile": "broad_back",
+    "tags": ["forest", "ambient", "bed", "warm"]
+  },
+  {
+    "asset_id": "hailang",
+    "label": "Ocean wave pulse",
+    "category": "ambient",
+    "description": "A rolling ocean-wave texture with calm seaside energy.",
+    "asset_ref": "audio_lib/hailang.mp3",
+    "default_duration_sec": 55,
+    "default_volume": 0.6,
+    "spatial_profile": "front_wide",
+    "tags": ["ocean", "water", "ambient", "calm"]
+  },
+  {
+    "asset_id": "hailang_1",
+    "label": "Ocean wave swell",
+    "category": "ambient",
+    "description": "A soft seasound layer with gentle movement.",
+    "asset_ref": "audio_lib/hailang.wav",
+    "default_duration_sec": 50,
+    "default_volume": 0.62,
+    "spatial_profile": "front_wide",
+    "tags": ["ocean", "water", "ambient", "swell"]
+  },
+  {
+    "asset_id": "horn",
+    "label": "Distant horn",
+    "category": "event",
+    "description": "A distant horn tone that can punctuate the scene.",
+    "asset_ref": "audio_lib/horn.wav",
+    "default_duration_sec": 8,
+    "default_volume": 0.5,
+    "spatial_profile": "far_left",
+    "tags": ["horn", "event", "cue", "distant"]
+  },
+  {
+    "asset_id": "horn_2",
+    "label": "Horn accent",
+    "category": "event",
+    "description": "A second horn variant for occasional accents.",
+    "asset_ref": "audio_lib/horn_2.wav",
+    "default_duration_sec": 7,
+    "default_volume": 0.55,
+    "spatial_profile": "far_right",
+    "tags": ["horn", "event", "accent", "distant"]
+  },
+  {
+    "asset_id": "bird_0",
+    "label": "Bird call 0",
+    "category": "event",
+    "description": "A gentle bird call useful as a soft natural highlight.",
+    "asset_ref": "audio_lib/bird_0.wav",
+    "default_duration_sec": 14,
+    "default_volume": 0.45,
+    "spatial_profile": "left_near",
+    "tags": ["bird", "forest", "event", "natural"]
+  },
+  {
+    "asset_id": "bird_1",
+    "label": "Bird call 1",
+    "category": "event",
+    "description": "A light bird chirp with a clear melodic tone.",
+    "asset_ref": "audio_lib/bird_1.wav",
+    "default_duration_sec": 16,
+    "default_volume": 0.47,
+    "spatial_profile": "right_near",
+    "tags": ["bird", "forest", "event", "bright"]
+  },
+  {
+    "asset_id": "bird_2",
+    "label": "Bird call 2",
+    "category": "event",
+    "description": "A small birdsong phrase good for texture and motion.",
+    "asset_ref": "audio_lib/bird_2.wav",
+    "default_duration_sec": 12,
+    "default_volume": 0.44,
+    "spatial_profile": "front_left",
+    "tags": ["bird", "forest", "event", "texture"]
+  },
+  {
+    "asset_id": "bird_3",
+    "label": "Bird call 3",
+    "category": "event",
+    "description": "A soft bird vocalization for distant natural ambiance.",
+    "asset_ref": "audio_lib/bird_3.wav",
+    "default_duration_sec": 13,
+    "default_volume": 0.46,
+    "spatial_profile": "front_right",
+    "tags": ["bird", "forest", "event", "natural"]
+  },
+  {
+    "asset_id": "leaf_1",
+    "label": "Leaf rustle 1",
+    "category": "event",
+    "description": "A crisp leaf rustle useful for delicate environmental detail.",
+    "asset_ref": "audio_lib/leaf_1.wav",
+    "default_duration_sec": 10,
+    "default_volume": 0.42,
+    "spatial_profile": "left_far",
+    "tags": ["leaf", "forest", "texture", "quiet"]
+  },
+  {
+    "asset_id": "leaf_2",
+    "label": "Leaf rustle 2",
+    "category": "event",
+    "description": "A soft leaf movement layer for subtle motion.",
+    "asset_ref": "audio_lib/leaf_2.wav",
+    "default_duration_sec": 11,
+    "default_volume": 0.43,
+    "spatial_profile": "right_far",
+    "tags": ["leaf", "forest", "texture", "motion"]
+  },
+  {
+    "asset_id": "run",
+    "label": "Running footsteps",
+    "category": "event",
+    "description": "A brief running footsteps cue for dynamic grounding.",
+    "asset_ref": "audio_lib/run.wav",
+    "default_duration_sec": 9,
+    "default_volume": 0.48,
+    "spatial_profile": "front_center",
+    "tags": ["footsteps", "motion", "dynamic"]
+  },
+  {
+    "asset_id": "run_2",
+    "label": "Running footsteps 2",
+    "category": "event",
+    "description": "A second running footsteps variation for pacing.",
+    "asset_ref": "audio_lib/run_2.wav",
+    "default_duration_sec": 10,
+    "default_volume": 0.49,
+    "spatial_profile": "front_left",
+    "tags": ["footsteps", "motion", "dynamic"]
+  },
+  {
+    "asset_id": "walking",
+    "label": "Walking footsteps",
+    "category": "event",
+    "description": "Soft walking footsteps for grounded movement.",
+    "asset_ref": "audio_lib/walking.wav",
+    "default_duration_sec": 12,
+    "default_volume": 0.45,
+    "spatial_profile": "front_right",
+    "tags": ["footsteps", "motion", "grounding"]
+  },
+  {
+    "asset_id": "walking_2",
+    "label": "Walking footsteps 2",
+    "category": "event",
+    "description": "A gentle second walking footsteps take.",
+    "asset_ref": "audio_lib/walking_2.wav",
+    "default_duration_sec": 12,
+    "default_volume": 0.46,
+    "spatial_profile": "front_center",
+    "tags": ["footsteps", "motion", "grounding"]
+  }
+]

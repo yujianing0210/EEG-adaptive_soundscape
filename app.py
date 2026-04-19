@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from scripts.eeg_pipeline import run_pipeline, save_windows, DEFAULT_EEG_FILE, WINDOW_SEC, STEP_SEC
 from scripts.scene_logic import bootstrap_scene, interpret_window, adapt_scene
-from lib.mock_sound_library import load_mock_library
+from lib.mock_sound_library import load_audio_library
 
 load_dotenv()
 
@@ -43,7 +43,7 @@ def write_json(obj: Any, name: str):
 
 @app.route("/")
 def index():
-    library = load_mock_library()
+    library = load_audio_library()
     current_window = None
     current_payload = None
     if STATE["windows"] and STATE["current_idx"] >= 0:

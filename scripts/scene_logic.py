@@ -7,7 +7,7 @@ import random
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from lib.mock_sound_library import load_mock_library
+from lib.mock_sound_library import load_audio_library
 from lib.unity_scene_schema import new_scene_id, base_world_state, build_unity_scene
 
 load_dotenv()
@@ -85,7 +85,7 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
 # ---------------------------------------------------------------------------
 
 def bootstrap_scene(user_prompt: str) -> Dict[str, Any]:
-    library = load_mock_library()
+    library = load_audio_library()
     scene_family = select_scene_family(user_prompt)
 
     if client:
@@ -174,7 +174,7 @@ def interpret_window(payload: dict) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], library: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    library = library or load_mock_library()
+    library = library or load_audio_library()
     state_label = mental_state.get("state_label", "settling")
     implication = mental_state.get("scene_implication", {})
     density = implication.get("density", 0.4)
