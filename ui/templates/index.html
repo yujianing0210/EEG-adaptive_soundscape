@@ -38,11 +38,23 @@
     <form action="/bootstrap" method="post">
       <input type="text" name="prompt" placeholder="e.g., I want a forest scene" value="{{ prompt or '' }}" />
       <button type="submit">Bootstrap scene</button>
+      <div style="margin-left:16px; display:flex; gap:12px; align-items:center; font-size:12px; color:#cbd5e1;">
+        <label><input type="radio" name="eeg_mode" value="recorded" {% if eeg_mode != 'realtime' %}checked{% endif %}> Pre-recorded CSV</label>
+        <label><input type="radio" name="eeg_mode" value="realtime" {% if eeg_mode == 'realtime' %}checked{% endif %}> Real-time OSC</label>
+      </div>
     </form>
+    {% if realtime_active %}
+      <div style="margin-top:8px; font-size:12px; color:#34d399;">Realtime EEG session active</div>
+    {% endif %}
     <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
       <form action="/step" method="post">
         <button type="submit">Next EEG window</button>
       </form>
+      {% if realtime_active %}
+      <form action="/stop_realtime" method="post">
+        <button type="submit" style="background:#ef4444;color:#fff;">Stop Realtime</button>
+      </form>
+      {% endif %}
       <div style="font-size:12px; color:#94a3b8;">Window {{ current_idx + 1 if current_idx>=0 else 0 }} / {{ total_windows }}</div>
     </div>
   </section>
@@ -51,13 +63,13 @@
     <h2>Current Scene</h2>
     {% if scene %}
       <div class="panel-title">Scene Type</div>
-      <div class="pill">{{ scene.scene_type }}</div>
+      <div class="pill" id="scene-type">{{ scene.scene_type }}</div>
       <div class="panel-title">Atmosphere</div>
-      <div>{{ scene.atmosphere }}</div>
+      <div id="scene-atmosphere">{{ scene.atmosphere }}</div>
       <div class="panel-title">Narration</div>
-      <div style="font-size:12px; color:#cbd5e1;">{{ scene.narration_script }}</div>
+      <div style="font-size:12px; color:#cbd5e1;" id="scene-narration">{{ scene.narration_script }}</div>
       <div class="panel-title">Unity JSON</div>
-      <pre>{{ scene | tojson(indent=2) }}</pre>
+      <pre id="scene-json">{{ scene | tojson(indent=2) }}</pre>
     {% else %}
       <div>Bootstrap to generate an initial scene.</div>
     {% endif %}
@@ -67,16 +79,23 @@
     <h2>EEG Analysis</h2>
     {% if current_payload %}
       <div class="panel-title">Window ID</div>
-      <div class="pill">{{ current_payload.window_id }}</div>
+      <div class="pill" id="eeg-window-id">{{ current_payload.window_id }}</div>
       <div class="panel-title">Rule state</div>
-      <div class="pill">{{ current_payload.current_rule_state }}</div>
+      <div class="pill" id="eeg-rule-state">{{ current_payload.current_rule_state }}</div>
       <div class="panel-title">Key ratios</div>
-      <div style="font-size:12px;">α/β: {{ '%.2f' % current_payload.current_features['alpha_beta_ratio'] if current_payload.current_features['alpha_beta_ratio'] is not none else '–' }}</div>
+      <div style="font-size:12px;" id="eeg-key-ratios">α/β: {{ '%.2f' % current_payload.current_features['alpha_beta_ratio'] if current_payload.current_features['alpha_beta_ratio'] is not none else '–' }}</div>
       <div class="panel-title">Payload</div>
-      <pre>{{ current_payload | tojson(indent=2) }}</pre>
+      <pre id="eeg-payload">{{ current_payload | tojson(indent=2) }}</pre>
     {% else %}
       <div>Click Next EEG window after bootstrapping.</div>
     {% endif %}
+  </section>
+
+  <section style="grid-column: 1 / span 2;">
+    <h2>Realtime EEG Monitor</h2>
+    <div id="realtime-status" style="font-size:12px; color:#cbd5e1; margin-bottom:6px;">Realtime plot will appear here when OSC data arrives.</div>
+    <canvas id="eeg-plot" width="760" height="240" style="width:100%; height:240px; background:#0b1221; border:1px solid #334155; border-radius:8px;"></canvas>
+    <div id="realtime-summary" style="margin-top:12px; font-size:12px; color:#e2e8f0; line-height:1.5;"></div>
   </section>
 
   <section>
@@ -106,12 +125,179 @@
     <h2>Adaptation Rationale</h2>
     {% if mental_history %}
       {% for item in mental_history %}
-        <div style="margin-bottom:6px; font-size:12px;">Window {{ item.window_id }}: {{ item.rule_state }} → {{ item.llm_state }} ({{ item.trend }}) conf {{ '%.2f' % item.confidence if item.confidence else '' }}</div>
+        <div style="margin-bottom:6px; font-size:12px;">Window {{ item.window_id }}: {{ item.rule_state }} → {{ item.llm_state }} ({{ item.trend }}) conf {{ '%.2f' % item.confidence if item.confidence else '' }}{% if item.auto_summary %} – auto summary{% endif %}</div>
       {% endfor %}
     {% else %}
       <div>Steps will appear here.</div>
     {% endif %}
   </section>
 </main>
+<script>
+  const realtimeActive = {{ 'true' if realtime_active else 'false' }};
+  if (realtimeActive) {
+    startRealtimeMonitor();
+  }
+
+  function startRealtimeMonitor() {
+    const statusEl = document.getElementById('realtime-status');
+    const summaryEl = document.getElementById('realtime-summary');
+    const canvas = document.getElementById('eeg-plot');
+    const ctx = canvas.getContext('2d');
+
+    async function refresh() {
+      try {
+        const res = await fetch('/realtime_status');
+        if (!res.ok) throw new Error('Network error');
+        const data = await res.json();
+
+        if (!data.active) {
+          statusEl.textContent = 'Realtime session is not active.';
+          drawEmptyPlot(ctx, canvas);
+          summaryEl.textContent = '';
+          return;
+        }
+
+        statusEl.textContent = `Realtime active · ${data.plot_points.length} points · pending ${data.pending_window_count}`;
+        drawRealtimePlot(ctx, canvas, data.plot_points);
+
+        if (data.summary) {
+          summaryEl.innerHTML = `
+            <div style="font-weight:600; margin-bottom:6px;">Latest 30s summary</div>
+            <div>State: <strong>${data.summary.state_label}</strong> · Trend: <strong>${data.summary.trend}</strong> · Confidence: <strong>${(data.summary.confidence || 0).toFixed(2)}</strong></div>
+            <div style="margin-top:6px;">Interpretation: ${data.summary.interpretation}</div>
+          `;
+        } else {
+          summaryEl.textContent = 'Waiting for first 30s realtime summary...';
+        }
+
+        // Update Current Scene
+        if (data.scene) {
+          const sceneTypeEl = document.getElementById('scene-type');
+          if (sceneTypeEl) sceneTypeEl.textContent = data.scene.scene_type || 'N/A';
+
+          const atmosphereEl = document.getElementById('scene-atmosphere');
+          if (atmosphereEl) atmosphereEl.textContent = data.scene.atmosphere || 'N/A';
+
+          const narrationEl = document.getElementById('scene-narration');
+          if (narrationEl) narrationEl.textContent = data.scene.narration_script || 'N/A';
+
+          const unityJsonEl = document.getElementById('scene-json');
+          if (unityJsonEl) unityJsonEl.textContent = JSON.stringify(data.scene, null, 2);
+        }
+
+        // Update EEG Analysis
+        if (data.current_payload) {
+          const windowIdEl = document.getElementById('eeg-window-id');
+          if (windowIdEl) windowIdEl.textContent = data.current_payload.window_id || 'N/A';
+
+          const ruleStateEl = document.getElementById('eeg-rule-state');
+          if (ruleStateEl) ruleStateEl.textContent = data.current_payload.current_rule_state || 'N/A';
+
+          const keyRatiosEl = document.getElementById('eeg-key-ratios');
+          const alphaBeta = data.current_payload.current_features ? data.current_payload.current_features.alpha_beta_ratio : null;
+          if (keyRatiosEl) keyRatiosEl.textContent = alphaBeta !== null ? `α/β: ${alphaBeta.toFixed(2)}` : 'α/β: –';
+
+          const payloadJsonEl = document.getElementById('eeg-payload');
+          if (payloadJsonEl) payloadJsonEl.textContent = JSON.stringify(data.current_payload, null, 2);
+        }
+
+      } catch (err) {
+        statusEl.textContent = 'Realtime fetch error.';
+        console.error(err);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 3000);
+  }
+
+  function drawEmptyPlot(ctx, canvas) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0b1221';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '14px Arial';
+    ctx.fillText('Waiting for realtime EEG signal...', 20, 30);
+  }
+
+  function drawRealtimePlot(ctx, canvas, points) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0b1221';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (!points || points.length === 0) {
+      drawEmptyPlot(ctx, canvas);
+      return;
+    }
+
+    const validPoints = points.filter(p => p.alpha_beta_ratio != null && p.stability_score != null);
+    if (validPoints.length === 0) {
+      drawEmptyPlot(ctx, canvas);
+      return;
+    }
+
+    const times = validPoints.map(p => p.time || 0);
+    const alphaBeta = validPoints.map(p => p.alpha_beta_ratio);
+    const stability = validPoints.map(p => p.stability_score);
+
+    const minTime = Math.min(...times);
+    const maxTime = Math.max(...times);
+    const minY = Math.min(...alphaBeta, ...stability);
+    const maxY = Math.max(...alphaBeta, ...stability);
+    const padding = 40;
+    const width = canvas.width - padding * 2;
+    const height = canvas.height - padding * 2;
+
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= 4; i += 1) {
+      const y = padding + (height / 4) * i;
+      ctx.moveTo(padding, y);
+      ctx.lineTo(canvas.width - padding, y);
+    }
+    ctx.stroke();
+
+    const mapX = t => padding + ((t - minTime) / (maxTime - minTime || 1)) * width;
+    const mapY = v => padding + height - ((v - minY) / (maxY - minY || 1)) * height;
+
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    validPoints.forEach((point, idx) => {
+      const x = mapX(point.time || 0);
+      const y = mapY(point.alpha_beta_ratio);
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    validPoints.forEach((point, idx) => {
+      const x = mapX(point.time || 0);
+      const y = mapY(point.stability_score);
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = '12px Arial';
+    ctx.fillText('α/β ratio', padding + 8, padding + 14);
+    ctx.fillText('stability', padding + 8, padding + 28);
+
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(padding + 80, padding + 4, 10, 10);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(padding + 80, padding + 18, 10, 10);
+
+    ctx.font = '11px Arial';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(`t=${Math.round(minTime)}s`, padding, canvas.height - padding + 15);
+    ctx.fillText(`t=${Math.round(maxTime)}s`, canvas.width - padding - 40, canvas.height - padding + 15);
+  }
+</script>
 </body>
 </html>

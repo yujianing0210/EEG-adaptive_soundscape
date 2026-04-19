@@ -3,3 +3,5 @@ python-dotenv
 pandas
 numpy
 openai
+matplotlib
+python-osc
