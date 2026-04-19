@@ -7,7 +7,7 @@ import time
 from translator import scene_to_commands
 
 # 📂 她的输出目录（改成你实际路径）
-SCENE_FILE = "D:\\Users\\Teres\\OneDrive\\OneDrive - Harvard University\\embodied_arch\\json_to_unity\\outputs\\current_unity_scene.json"
+SCENE_FILE = "C:\\Users\\nomy_\\Desktop\\EEG-adaptive_soundscape\\outputs\\current_unity_scene.json"
 
 prev_ids = set()
 
