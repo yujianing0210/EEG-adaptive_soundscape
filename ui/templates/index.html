@@ -48,7 +48,8 @@
     {% endif %}
     <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
       <form action="/step" method="post">
-        <button type="submit">Next EEG window</button>
+        <button type="submit" name="direction" value="previous" {% if current_idx <= 0 %}disabled{% endif %}>Previous EEG Window</button>
+        <button type="submit" name="direction" value="next">Next EEG Window</button>
       </form>
       {% if realtime_active %}
       <form action="/stop_realtime" method="post">
@@ -77,18 +78,14 @@
 
   <section>
     <h2>EEG Analysis</h2>
-    {% if current_payload %}
-      <div class="panel-title">Window ID</div>
-      <div class="pill" id="eeg-window-id">{{ current_payload.window_id }}</div>
-      <div class="panel-title">Rule state</div>
-      <div class="pill" id="eeg-rule-state">{{ current_payload.current_rule_state }}</div>
-      <div class="panel-title">Key ratios</div>
-      <div style="font-size:12px;" id="eeg-key-ratios">α/β: {{ '%.2f' % current_payload.current_features['alpha_beta_ratio'] if current_payload.current_features['alpha_beta_ratio'] is not none else '–' }}</div>
-      <div class="panel-title">Payload</div>
-      <pre id="eeg-payload">{{ current_payload | tojson(indent=2) }}</pre>
-    {% else %}
-      <div>Click Next EEG window after bootstrapping.</div>
-    {% endif %}
+    <div class="panel-title">Window ID</div>
+    <div class="pill" id="eeg-window-id">{{ current_payload.window_id if current_payload else 'N/A' }}</div>
+    <div class="panel-title">Rule state</div>
+    <div class="pill" id="eeg-rule-state">{{ current_payload.current_rule_state if current_payload else 'N/A' }}</div>
+    <div class="panel-title">Key ratios</div>
+    <div style="font-size:12px;" id="eeg-key-ratios">α/β: {{ '%.2f' % current_payload.current_features['alpha_beta_ratio'] if current_payload and current_payload.current_features and current_payload.current_features['alpha_beta_ratio'] is not none else '–' }}</div>
+    <div class="panel-title">Payload</div>
+    <pre id="eeg-payload">{{ current_payload | tojson(indent=2) if current_payload else '{}' }}</pre>
   </section>
 
   <section style="grid-column: 1 / span 2;">

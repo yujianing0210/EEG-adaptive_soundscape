@@ -213,6 +213,8 @@ def do_bootstrap():
         "scene": scene,
         "windows": payloads,
     })
+    STATE["scene_history"] = [scene]
+    STATE["current_payload"] = None
 
     flash("Initial scene generated and EEG windows prepared.")
     return redirect(url_for("index"))
@@ -224,6 +226,24 @@ def step_scene():
         flash("Run bootstrap first.")
         return redirect(url_for("index"))
 
+    direction = request.form.get('direction', 'next')
+
+    if direction == 'previous':
+        if STATE["eeg_mode"] == "realtime":
+            flash("Previous not supported in realtime mode.")
+            return redirect(url_for("index"))
+        prev_idx = STATE["current_idx"] - 1
+        if prev_idx >= 0:
+            STATE["current_idx"] = prev_idx
+            STATE["scene"] = STATE["scene_history"][prev_idx]
+            STATE["current_payload"] = STATE["windows"][prev_idx]
+            write_json(STATE["scene"], "current_unity_scene.json")
+            flash(f"Jumped to window {prev_idx}.")
+        else:
+            flash("Already at first window.")
+        return redirect(url_for("index"))
+
+    # direction == 'next'
     if STATE["eeg_mode"] == "realtime":
         if not has_realtime_payloads():
             flash("No live EEG window is ready yet. Please wait for the next window.")
@@ -248,7 +268,9 @@ def step_scene():
     write_json(updated_scene, "current_unity_scene.json")
 
     STATE["scene"] = updated_scene
+    STATE["scene_history"].append(updated_scene)
     STATE["current_idx"] = next_idx
+    STATE["current_payload"] = payload
     STATE["mental_history"].append({
         "window_id": payload.get("window_id"),
         "rule_state": payload.get("current_rule_state"),

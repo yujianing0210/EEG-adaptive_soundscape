@@ -1079,7 +1079,9 @@ def save_history_loop(stop_event: threading.Event) -> None:
         time.sleep(1)  # 保存每秒
         with buffer_lock:
             try:
-                write_json(list(realtime_payload_history), "outputs/realtime_payload_history.json")
+                os.makedirs("outputs", exist_ok=True)
+                with open("outputs/realtime_payload_history.json", "w", encoding="utf-8") as f:
+                    json.dump(list(realtime_payload_history), f, indent=2)
             except Exception as e:
                 print(f"Failed to save history: {e}")
 
