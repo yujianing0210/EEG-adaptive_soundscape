@@ -1,0 +1,951 @@
+[
+  {
+    "default_position": [
+      0.0,
+      0.0,
+      1.1
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 2.0,
+    "fade_out_sec": 2.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 1.0,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "body_slow_breath_01",
+    "label": "Slow Breathing",
+    "description": "A quiet slow inhale and exhale sound for grounding and meditation settling.",
+    "asset_ref": "common/action/body_slow_breath_01.wav",
+    "scene": [
+      "forest",
+      "ocean_beach"
+    ],
+    "layer": "action",
+    "role": "action",
+    "tags": [
+      "common",
+      "action",
+      "breath",
+      "breathing",
+      "body",
+      "grounding",
+      "calm",
+      "settling",
+      "near"
+    ],
+    "loop": true,
+    "suddenness": 0.02,
+    "intensity": 0.18,
+    "recommended_distance": "near",
+    "recommended_volume": 0.26,
+    "use_when": [
+      "settling",
+      "anxiety_high",
+      "stability_low",
+      "grounding"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "body_anchored",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      -0.1,
+      1.3
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 1.5,
+    "fade_out_sec": 2.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.65,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_grass_footstep_01",
+    "label": "Soft Grass Footstep",
+    "description": "Slow and soft footsteps on grass, creating a gentle embodied presence inside the forest.",
+    "asset_ref": "forest/action/forest_grass_footstep_01.wav",
+    "scene": [
+      "forest"
+    ],
+    "layer": "action",
+    "role": "action",
+    "tags": [
+      "forest",
+      "action",
+      "footstep",
+      "grass",
+      "body",
+      "grounding",
+      "embodied",
+      "near"
+    ],
+    "loop": true,
+    "suddenness": 0.12,
+    "intensity": 0.26,
+    "recommended_distance": "near",
+    "recommended_volume": 0.22,
+    "use_when": [
+      "immersion",
+      "attention_low",
+      "grounding"
+    ],
+    "avoid_when": [
+      "anxiety_high"
+    ],
+    "spatial_behavior": [
+      "body_anchored",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      0.0,
+      4.0
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 4.0,
+    "fade_out_sec": 4.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 1.0,
+    "is_primary_ambient": true,
+    "is_rare_event": false,
+    "asset_id": "forest_ambient_bed_01",
+    "label": "Forest Ambient Bed 01",
+    "description": "A soft and quiet forest ambience bed for creating an enclosed, calm, and protected atmosphere.",
+    "asset_ref": "forest/ambient/forest_ambient_bed_01.mp3",
+    "scene": [
+      "forest"
+    ],
+    "layer": "ambient",
+    "role": "ambient",
+    "tags": [
+      "forest",
+      "ambient",
+      "bed",
+      "calm",
+      "grounding",
+      "stable",
+      "enclosed",
+      "protected",
+      "wide"
+    ],
+    "loop": true,
+    "suddenness": 0.03,
+    "intensity": 0.3,
+    "recommended_distance": "wide",
+    "recommended_volume": 0.48,
+    "use_when": [
+      "settling",
+      "immersion",
+      "anxiety_high",
+      "stability_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "wide",
+      "diffuse",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      0.0,
+      4.2
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 4.0,
+    "fade_out_sec": 4.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.75,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_ambient_bed_02",
+    "label": "Forest Ambient Bed 02",
+    "description": "An alternate quiet forest ambience bed for variation, maintaining a calm and stable forest atmosphere.",
+    "asset_ref": "forest/ambient/forest_ambient_bed_02.mp3",
+    "scene": [
+      "forest"
+    ],
+    "layer": "ambient",
+    "role": "ambient",
+    "tags": [
+      "forest",
+      "ambient",
+      "bed",
+      "calm",
+      "stable",
+      "enclosed",
+      "variation",
+      "wide"
+    ],
+    "loop": true,
+    "suddenness": 0.03,
+    "intensity": 0.28,
+    "recommended_distance": "wide",
+    "recommended_volume": 0.44,
+    "use_when": [
+      "settling",
+      "immersion",
+      "stability_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "wide",
+      "diffuse",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      1.2,
+      3.5
+    ],
+    "default_motion": {
+      "type": "drift",
+      "start": [
+        -2.5,
+        1.2,
+        3.5
+      ],
+      "end": [
+        2.5,
+        1.2,
+        3.8
+      ],
+      "duration": 16.0,
+      "repeat": true
+    },
+    "fade_in_sec": 4.0,
+    "fade_out_sec": 4.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.65,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_wind_leaves_01",
+    "label": "Wind Through Leaves",
+    "description": "Gentle wind moving through leaves, adding soft enclosure and spatial texture to the forest scene.",
+    "asset_ref": "forest/ambient/forest_wind_leaves_01.mp3",
+    "scene": [
+      "forest"
+    ],
+    "layer": "ambient",
+    "role": "ambient",
+    "tags": [
+      "forest",
+      "ambient",
+      "wind",
+      "leaves",
+      "calm",
+      "texture",
+      "enclosed",
+      "wide"
+    ],
+    "loop": true,
+    "suddenness": 0.06,
+    "intensity": 0.34,
+    "recommended_distance": "wide",
+    "recommended_volume": 0.36,
+    "use_when": [
+      "settling",
+      "immersion",
+      "attention_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "wide",
+      "diffuse",
+      "slow_movement"
+    ]
+  },
+  {
+    "default_position": [
+      3.8,
+      1.8,
+      5.2
+    ],
+    "default_motion": {
+      "type": "overhead_pass",
+      "start": [
+        3.8,
+        2.2,
+        5.5
+      ],
+      "end": [
+        -2.5,
+        2.0,
+        5.8
+      ],
+      "duration": 6.0,
+      "repeat": false
+    },
+    "fade_in_sec": 0.5,
+    "fade_out_sec": 1.5,
+    "auto_delete_after_sec": 8.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.85,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_bird_far_01",
+    "label": "Distant Forest Bird",
+    "description": "A soft distant bird call that gently brings attention back without disrupting the meditation.",
+    "asset_ref": "forest/event/forest_bird_far_01.wav",
+    "scene": [
+      "forest"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "forest",
+      "event",
+      "bird",
+      "distant",
+      "far",
+      "attention",
+      "alive",
+      "gentle"
+    ],
+    "loop": false,
+    "suddenness": 0.18,
+    "intensity": 0.26,
+    "recommended_distance": "far",
+    "recommended_volume": 0.24,
+    "use_when": [
+      "immersion",
+      "attention_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "static",
+      "far"
+    ]
+  },
+  {
+    "default_position": [
+      -3.5,
+      2.0,
+      5.5
+    ],
+    "default_motion": {
+      "type": "overhead_pass",
+      "start": [
+        -3.5,
+        2.4,
+        5.8
+      ],
+      "end": [
+        3.5,
+        2.1,
+        5.6
+      ],
+      "duration": 6.0,
+      "repeat": false
+    },
+    "fade_in_sec": 0.5,
+    "fade_out_sec": 1.5,
+    "auto_delete_after_sec": 8.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.65,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_bird_far_02",
+    "label": "High Distant Forest Bird",
+    "description": "A soft but slightly higher-pitched distant bird call, used as a gentle attention cue in the forest scene.",
+    "asset_ref": "forest/event/forest_bird_far_02.wav",
+    "scene": [
+      "forest"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "forest",
+      "event",
+      "bird",
+      "distant",
+      "far",
+      "attention",
+      "alive",
+      "gentle",
+      "high_pitch"
+    ],
+    "loop": false,
+    "suddenness": 0.24,
+    "intensity": 0.28,
+    "recommended_distance": "far",
+    "recommended_volume": 0.2,
+    "use_when": [
+      "immersion",
+      "attention_low"
+    ],
+    "avoid_when": [
+      "anxiety_high",
+      "settling"
+    ],
+    "spatial_behavior": [
+      "static",
+      "far"
+    ]
+  },
+  {
+    "default_position": [
+      -2.2,
+      0.3,
+      3.0
+    ],
+    "default_motion": {
+      "type": "local_random",
+      "center": [
+        -2.2,
+        0.3,
+        3.0
+      ],
+      "radius": 0.4,
+      "speed": 0.04
+    },
+    "fade_in_sec": 0.4,
+    "fade_out_sec": 1.2,
+    "auto_delete_after_sec": 7.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.7,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_leaf_rustle_mid_01",
+    "label": "Middle Distance Leaf Rustle",
+    "description": "A quiet leaf rustle in the middle distance, adding subtle life and spatial presence to the forest.",
+    "asset_ref": "forest/event/forest_leaf_rustle_mid_01.wav",
+    "scene": [
+      "forest"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "forest",
+      "event",
+      "leaf",
+      "rustle",
+      "middle",
+      "texture",
+      "alive",
+      "gentle"
+    ],
+    "loop": false,
+    "suddenness": 0.2,
+    "intensity": 0.3,
+    "recommended_distance": "middle",
+    "recommended_volume": 0.24,
+    "use_when": [
+      "immersion",
+      "attention_low"
+    ],
+    "avoid_when": [
+      "anxiety_high"
+    ],
+    "spatial_behavior": [
+      "static",
+      "middle"
+    ]
+  },
+  {
+    "default_position": [
+      2.8,
+      0.5,
+      4.8
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 0.3,
+    "fade_out_sec": 1.2,
+    "auto_delete_after_sec": 6.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.8,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "forest_water_drop_far_01",
+    "label": "Distant Forest Water Drop",
+    "description": "A very soft distant water drop, used as a small attention cue inside the calm forest scene.",
+    "asset_ref": "forest/event/forest_water_drop_far_01.wav",
+    "scene": [
+      "forest"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "forest",
+      "event",
+      "water",
+      "drop",
+      "distant",
+      "far",
+      "attention",
+      "gentle"
+    ],
+    "loop": false,
+    "suddenness": 0.16,
+    "intensity": 0.22,
+    "recommended_distance": "far",
+    "recommended_volume": 0.2,
+    "use_when": [
+      "immersion",
+      "attention_low",
+      "adaptive_shift"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "static",
+      "far"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      -0.1,
+      1.4
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 1.5,
+    "fade_out_sec": 2.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.65,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "ocean_wet_sand_footstep_01",
+    "label": "Wet Sand Footstep",
+    "description": "Slow soft footsteps on wet sand, creating a calm first-person beach presence.",
+    "asset_ref": "ocean_beach/action/ocean_wet_sand_footstep_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "action",
+    "role": "action",
+    "tags": [
+      "ocean",
+      "beach",
+      "action",
+      "footstep",
+      "wet_sand",
+      "body",
+      "grounding",
+      "near"
+    ],
+    "loop": true,
+    "suddenness": 0.12,
+    "intensity": 0.25,
+    "recommended_distance": "near",
+    "recommended_volume": 0.22,
+    "use_when": [
+      "immersion",
+      "attention_low",
+      "grounding"
+    ],
+    "avoid_when": [
+      "anxiety_high"
+    ],
+    "spatial_behavior": [
+      "body_anchored",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      1.0,
+      4.5
+    ],
+    "default_motion": {
+      "type": "drift",
+      "start": [
+        -3.0,
+        1.0,
+        4.5
+      ],
+      "end": [
+        3.0,
+        1.0,
+        4.7
+      ],
+      "duration": 20.0,
+      "repeat": true
+    },
+    "fade_in_sec": 4.0,
+    "fade_out_sec": 4.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.65,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "ocean_sea_breeze_01",
+    "label": "Soft Sea Breeze",
+    "description": "A soft sea breeze that creates an open, expansive, and calm beach atmosphere.",
+    "asset_ref": "ocean_beach/ambient/ocean_sea_breeze_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "ambient",
+    "role": "ambient",
+    "tags": [
+      "ocean",
+      "beach",
+      "ambient",
+      "sea",
+      "breeze",
+      "wind",
+      "open",
+      "calm",
+      "wide"
+    ],
+    "loop": true,
+    "suddenness": 0.04,
+    "intensity": 0.3,
+    "recommended_distance": "wide",
+    "recommended_volume": 0.38,
+    "use_when": [
+      "settling",
+      "immersion",
+      "anxiety_high",
+      "stability_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "wide",
+      "diffuse",
+      "slow_movement"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      -0.1,
+      3.8
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 4.0,
+    "fade_out_sec": 4.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.75,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "ocean_shoreline_wash_01",
+    "label": "Shoreline Wash",
+    "description": "Gentle water washing over sand, providing a slow rhythmic texture for calm breathing.",
+    "asset_ref": "ocean_beach/ambient/ocean_shoreline_wash_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "ambient",
+    "role": "ambient",
+    "tags": [
+      "ocean",
+      "beach",
+      "ambient",
+      "shoreline",
+      "wash",
+      "sand",
+      "rhythm",
+      "calm",
+      "wide"
+    ],
+    "loop": true,
+    "suddenness": 0.05,
+    "intensity": 0.34,
+    "recommended_distance": "wide",
+    "recommended_volume": 0.42,
+    "use_when": [
+      "settling",
+      "immersion",
+      "anxiety_high",
+      "stability_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "wide",
+      "diffuse",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      0.0,
+      5.0
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 4.0,
+    "fade_out_sec": 4.0,
+    "auto_delete_after_sec": null,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 1.0,
+    "is_primary_ambient": true,
+    "is_rare_event": false,
+    "asset_id": "ocean_waves_soft_01",
+    "label": "Soft Ocean Waves",
+    "description": "Soft ocean waves forming the main calm ambient bed of the beach scene.",
+    "asset_ref": "ocean_beach/ambient/ocean_waves_soft_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "ambient",
+    "role": "ambient",
+    "tags": [
+      "ocean",
+      "beach",
+      "ambient",
+      "waves",
+      "soft",
+      "calm",
+      "rhythmic",
+      "expansive",
+      "wide"
+    ],
+    "loop": true,
+    "suddenness": 0.04,
+    "intensity": 0.36,
+    "recommended_distance": "wide",
+    "recommended_volume": 0.5,
+    "use_when": [
+      "settling",
+      "immersion",
+      "anxiety_high",
+      "stability_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "wide",
+      "diffuse",
+      "static"
+    ]
+  },
+  {
+    "default_position": [
+      0.0,
+      0.5,
+      7.0
+    ],
+    "default_motion": {
+      "type": "approach_recede",
+      "start": [
+        -7.0,
+        0.5,
+        7.0
+      ],
+      "mid": [
+        -3.5,
+        0.5,
+        5.5
+      ],
+      "end": [
+        1.5,
+        0.5,
+        7.5
+      ],
+      "duration": 9.0,
+      "repeat": false,
+      "volume_curve": "fade_in_then_out"
+    },
+    "fade_in_sec": 0.8,
+    "fade_out_sec": 2.0,
+    "auto_delete_after_sec": 8.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.35,
+    "is_primary_ambient": false,
+    "is_rare_event": true,
+    "asset_id": "boat_horn_far_01",
+    "label": "Distant Boat Horn",
+    "description": "A very distant soft boat horn that creates a sense of far horizon and open space.",
+    "asset_ref": "ocean_beach/event/boat_horn_far_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "ocean",
+      "beach",
+      "event",
+      "boat",
+      "horn",
+      "distant",
+      "far",
+      "horizon",
+      "open_space"
+    ],
+    "loop": false,
+    "suddenness": 0.42,
+    "intensity": 0.34,
+    "recommended_distance": "far",
+    "recommended_volume": 0.16,
+    "use_when": [
+      "immersion",
+      "stability_high"
+    ],
+    "avoid_when": [
+      "anxiety_high",
+      "settling"
+    ],
+    "spatial_behavior": [
+      "static",
+      "far"
+    ]
+  },
+  {
+    "default_position": [
+      4.5,
+      0.3,
+      6.0
+    ],
+    "default_motion": {
+      "type": "none"
+    },
+    "fade_in_sec": 0.8,
+    "fade_out_sec": 2.0,
+    "auto_delete_after_sec": 8.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.25,
+    "is_primary_ambient": false,
+    "is_rare_event": true,
+    "asset_id": "child_play_far_01",
+    "label": "Distant Children Playing",
+    "description": "Very distant and soft children playing, used rarely as a subtle beach life cue when the user is stable.",
+    "asset_ref": "ocean_beach/event/child_play_far_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "ocean",
+      "beach",
+      "event",
+      "children",
+      "life",
+      "distant",
+      "far",
+      "human",
+      "social",
+      "alive"
+    ],
+    "loop": false,
+    "suddenness": 0.35,
+    "intensity": 0.32,
+    "recommended_distance": "far",
+    "recommended_volume": 0.14,
+    "use_when": [
+      "immersion",
+      "stability_high"
+    ],
+    "avoid_when": [
+      "anxiety_high",
+      "settling",
+      "focus_mode"
+    ],
+    "spatial_behavior": [
+      "static",
+      "far"
+    ]
+  },
+  {
+    "default_position": [
+      -4.8,
+      2.5,
+      5.8
+    ],
+    "default_motion": {
+      "type": "overhead_pass",
+      "start": [
+        -5.5,
+        2.7,
+        5.8
+      ],
+      "end": [
+        5.5,
+        2.6,
+        5.4
+      ],
+      "duration": 7.0,
+      "repeat": false
+    },
+    "fade_in_sec": 0.5,
+    "fade_out_sec": 1.5,
+    "auto_delete_after_sec": 9.0,
+    "repeat_count": 1,
+    "repeat_interval_sec": 0,
+    "priority": 0.85,
+    "is_primary_ambient": false,
+    "is_rare_event": false,
+    "asset_id": "ocean_seagull_far_01",
+    "label": "Distant Seagull",
+    "description": "A soft distant seagull call that adds a gentle sense of life to the beach scene.",
+    "asset_ref": "ocean_beach/event/ocean_seagull_far_01.wav",
+    "scene": [
+      "ocean_beach"
+    ],
+    "layer": "event",
+    "role": "event",
+    "tags": [
+      "ocean",
+      "beach",
+      "event",
+      "seagull",
+      "bird",
+      "distant",
+      "far",
+      "attention",
+      "alive"
+    ],
+    "loop": false,
+    "suddenness": 0.24,
+    "intensity": 0.28,
+    "recommended_distance": "far",
+    "recommended_volume": 0.22,
+    "use_when": [
+      "immersion",
+      "attention_low"
+    ],
+    "avoid_when": [],
+    "spatial_behavior": [
+      "static",
+      "far"
+    ]
+  }
+]
