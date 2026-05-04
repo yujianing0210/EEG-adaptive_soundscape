@@ -63,7 +63,9 @@ def build_unity_resource_entry(path: Path, resources_dir: Path) -> Dict[str, obj
     searchable = f"{asset_id} {asset_ref}".lower()
 
     category = "ambient"
-    if any(token in searchable for token in ["bird", "leaf", "horn", "step", "walk", "run", "creak", "event", "cue"]):
+    if any(token in searchable for token in ["step", "walk", "walking", "run", "breath", "body", "action"]):
+        category = "action"
+    elif any(token in searchable for token in ["bird", "leaf", "horn", "plane", "creak", "event", "cue"]):
         category = "event"
     if any(token in searchable for token in ["narration", "voice", "guide"]):
         category = "narration"
@@ -72,35 +74,45 @@ def build_unity_resource_entry(path: Path, resources_dir: Path) -> Dict[str, obj
     tags.update(part.lower() for part in relative.parts)
     if any(token in searchable for token in ["ocean", "sea", "beach", "wave", "hailang", "water"]):
         tags.update(["ocean", "beach", "water", "wave"])
+    if any(token in searchable for token in ["horn", "boat", "ship", "plane"]):
+        tags.update(["ocean", "beach", "far"])
     if any(token in searchable for token in ["forest", "bird", "leaf", "wood", "tree"]):
         tags.update(["forest", "natural"])
+    if category == "action":
+        tags.update(["common", "action", "body", "grounding", "near", "forest", "ocean", "beach"])
+
+    default_motion = {"type": "none"}
+    if category == "ambient" and any(token in searchable for token in ["wind", "breeze"]):
+        default_motion = {"type": "drift", "duration": 16.0, "repeat": True}
+    elif category == "event" and any(token in searchable for token in ["bird", "seagull"]):
+        default_motion = {"type": "orbit", "speed": 0.12, "radius": 1.6}
+    elif category == "event" and any(token in searchable for token in ["horn", "boat", "ship", "plane"]):
+        default_motion = {"type": "approach_recede", "duration": 9.0, "repeat": False, "pass_count": 1}
+    elif category == "event" and any(token in searchable for token in ["leaf", "creak"]):
+        default_motion = {"type": "local_random", "radius": 0.4, "speed": 0.04}
 
     return {
         "asset_id": asset_id,
         "label": asset_id.replace("_", " ").replace("-", " ").title(),
+        "layer": category,
+        "role": category,
         "category": category,
         "description": f"Unity Resources audio clip: {asset_ref}",
         "asset_ref": asset_ref,
         "default_duration_sec": 60,
         "default_volume": 0.7,
+        "recommended_volume": 0.42 if category == "ambient" else 0.24,
+        "recommended_distance": "wide" if category == "ambient" else ("near" if category == "action" else "far"),
         "spatial_profile": "broad_front" if category == "ambient" else "point",
+        "spatial_behavior": ["wide"] if category == "ambient" else (["body_anchored"] if category == "action" else ["point"]),
+        "default_motion": default_motion,
+        "repeat_count": 1,
+        "repeat_interval_sec": 2.5 if category == "event" else 0,
         "tags": sorted(tag for tag in tags if tag),
     }
 
 
 def load_audio_library(path: str | Path = "data/audio_library.json") -> List[Dict]:
-    unity_resources = os.getenv("UNITY_RESOURCES_DIR")
-    if unity_resources:
-        resources_dir = Path(unity_resources).expanduser()
-        if resources_dir.exists() and resources_dir.is_dir():
-            assets = [
-                build_unity_resource_entry(file_path, resources_dir)
-                for file_path in sorted(resources_dir.rglob("*"))
-                if is_audio_file(file_path)
-            ]
-            if assets:
-                return assets
-
     path = Path(path)
     if path.exists() and path.is_file():
         try:
@@ -110,6 +122,21 @@ def load_audio_library(path: str | Path = "data/audio_library.json") -> List[Dic
                 return data
         except Exception:
             pass
+
+    # Optional fallback for quick prototypes where no curated metadata exists.
+    # The curated JSON should normally be the source of truth because it explains
+    # scene, layer, intended use, spatial behavior, and Unity defaults.
+    unity_resources = os.getenv("UNITY_RESOURCES_DIR")
+    if unity_resources and os.getenv("USE_UNITY_RESOURCES_SCAN") == "1":
+        resources_dir = Path(unity_resources).expanduser()
+        if resources_dir.exists() and resources_dir.is_dir():
+            assets = [
+                build_unity_resource_entry(file_path, resources_dir)
+                for file_path in sorted(resources_dir.rglob("*"))
+                if is_audio_file(file_path)
+            ]
+            if assets:
+                return assets
 
     directory = Path("audio_lib")
     if directory.exists() and directory.is_dir():
