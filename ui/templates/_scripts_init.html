@@ -1,0 +1,20 @@
+<script>
+/* ══════════════════════════════════════════════════════
+   INIT
+   ══════════════════════════════════════════════════════ */
+(function init() {
+  // Restore tab from localStorage
+  const t = parseInt(localStorage.getItem('activeTab') || '1');
+  switchTab(t);
+
+  // V2 init
+  applyTheme(V2.scene?.scene_type);
+  renderField(V2.scene);
+  renderState(V2.payload);
+  renderLog(V2.history);
+  tickWave();
+
+  startUnitySync();
+  if (V2.rtActive) startRTMonitor();
+})();
+</script>

@@ -1,0 +1,22 @@
+<style>
+/* ── RESET ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, 'Inter', Arial, sans-serif; background: #0d1520; color: #e2e8f0; }
+
+    /* ── TAB BAR ── */
+    .tab-bar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 9000;
+      display: flex; gap: 6px; padding: 7px 14px;
+      background: rgba(10,14,22,0.7); backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+    .tab-btn {
+      padding: 4px 14px; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 20px; background: transparent;
+      color: rgba(255,255,255,0.4); font-size: 11px; cursor: pointer;
+      letter-spacing: 0.06em; transition: all 0.2s;
+    }
+    .tab-btn.active { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.85); border-color: rgba(255,255,255,0.28); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+</style>

@@ -1,0 +1,6 @@
+requests
+librosa
+soundfile
+tqdm
+torch
+laion-clap

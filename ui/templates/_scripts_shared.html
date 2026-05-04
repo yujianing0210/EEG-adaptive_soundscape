@@ -1,0 +1,12 @@
+<script>
+/* ══════════════════════════════════════════════════════
+   SHARED: tab switching
+   ══════════════════════════════════════════════════════ */
+function switchTab(n) {
+  document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('v' + n).classList.add('active');
+  document.querySelectorAll('.tab-btn')[n - 1].classList.add('active');
+  localStorage.setItem('activeTab', n);
+}
+</script>

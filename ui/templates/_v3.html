@@ -1,0 +1,143 @@
+<!-- ══════════════════════════════════════════════
+     V3  —  NeuroScape (CLAUDE.md spec)
+     ══════════════════════════════════════════════ -->
+<div id="v3" class="tab-pane">
+
+  <!-- Page 1: Home -->
+  <div class="v3-page v3-active" id="v3-home">
+    <div class="v3-brand">NeuroScape</div>
+    <div class="v3-home-wrap">
+      <input class="v3-home-inp" id="v3-prompt" type="text" placeholder="Describe your world..." />
+      <div class="v3-mode-toggle" aria-label="EEG data source">
+        <button class="v3-mode-btn on" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
+        <button class="v3-mode-btn" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
+      </div>
+      <button class="v3-circ" onclick="v3Submit()">↑</button>
+    </div>
+    <div class="v3-examples">
+      <div class="v3-eg"><strong>Example 1:</strong><br>I want a forest scene. There are many tall trees and beautiful flowers. I can hear the sound of the wind blowing through the leaves....</div>
+      <div class="v3-eg"><strong>Example 2:</strong><br>Any place that can bring me calmness. It must be completely natural, without any traces of human presence.</div>
+      <div class="v3-eg"><strong>Example 3:</strong><br>Bring me to somewhere fun, somewhere that can inspire my imagination.</div>
+    </div>
+  </div>
+
+  <!-- Page 2: Loading -->
+  <div class="v3-page" id="v3-loading">
+    <div class="v3-blob-wrap">
+      <div class="v3-blob"></div>
+      <div class="v3-blob-inner">
+        <div class="v3-load-title">NeuroScape</div>
+        <div class="v3-load-sub">Your world is under construction</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Page 3: Preview -->
+  <div class="v3-page" id="v3-preview">
+    <div class="v3-prev-title">NeuroScape</div>
+    <div class="v3-prev-row">
+      <input class="v3-prev-inp" type="text" placeholder="Type your feedback" />
+      <div class="v3-mode-toggle" aria-label="EEG data source">
+        <button class="v3-mode-btn on" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
+        <button class="v3-mode-btn" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
+      </div>
+      <button class="v3-circ" style="width:32px;height:32px;font-size:14px;">↑</button>
+    </div>
+    <div class="v3-scene-card">
+      <div>
+        <div class="v3-sc-label">Scene Preview</div>
+        <div class="v3-sc-type">[<span id="v3-prev-env">forest</span>]</div>
+      </div>
+      <div class="v3-sc-desc" id="v3-prev-desc">You are standing in a quiet forest clearing. Tall ancient trees rise around you, their canopy filtering soft green light. The air is cool and filled with the gentle sounds of wind through leaves.</div>
+      <div class="v3-sc-exp" id="v3-prev-exp">"You will experience deep calm and natural grounding."</div>
+      <div class="v3-consent">Consent: By clicking the ENTER button below, your meditation session will begin and your EEG data will be monitored during the session.</div>
+      <button class="v3-enter-btn" onclick="v3GoTo('session')">ENTER</button>
+    </div>
+  </div>
+
+  <!-- Page 4: Session -->
+  <div class="v3-page" id="v3-session">
+    <div class="v3-sh">
+      <div class="v3-sh-title">NeuroScape</div>
+      <div class="v3-sh-row">
+        <input class="v3-sh-inp" id="v3-sess-prompt" type="text" readonly />
+        <div class="v3-mode-toggle" aria-label="EEG data source">
+          <button class="v3-mode-btn on" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
+          <button class="v3-mode-btn" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
+        </div>
+        <button class="v3-circ" style="width:30px;height:30px;font-size:13px;">↑</button>
+      </div>
+    </div>
+
+    <div class="v3-body">
+      <!-- Left: Scene Design + Sound Library -->
+      <div class="v3-left">
+        <div class="v3-panel">
+          <div class="v3-ptitle"><i data-lucide="settings"></i><span>Scene Design</span></div>
+          <div class="v3-json" id="v3-scene-json"></div>
+        </div>
+        <div class="v3-panel">
+          <div class="v3-ptitle"><i data-lucide="music"></i><span>Sound Library</span></div>
+          <div class="v3-sg">
+            <div class="v3-sg-lbl">Ambient Sound</div>
+            <div class="v3-pills" id="v3-ambient"></div>
+          </div>
+          <div class="v3-sg">
+            <div class="v3-sg-lbl">Event Sound</div>
+            <div class="v3-pills" id="v3-event"></div>
+          </div>
+          <div class="v3-sg">
+            <div class="v3-sg-lbl">Action Sound</div>
+            <div class="v3-pills" id="v3-action"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center: Spatial Map -->
+      <div class="v3-center">
+        <div class="v3-center-card">
+          <div class="v3-marr l"><i data-lucide="chevron-left"></i></div>
+          <div class="v3-marr r"><i data-lucide="chevron-right"></i></div>
+          <div class="v3-clabel">Scene Preview</div>
+          <div class="v3-cscene">[<span id="v3-map-env">forest</span>]</div>
+          <canvas id="v3-map"></canvas>
+          <div class="v3-guidance" id="v3-guidance">Now, imagine yourself in a rainforest.</div>
+        </div>
+      </div>
+
+      <!-- Right: Brain State -->
+      <div class="v3-right">
+        <div class="v3-panel">
+          <div class="v3-ptitle"><i data-lucide="brain"></i><span>Brain Power Band</span></div>
+          <div id="v3-eeg-bars"></div>
+          <canvas id="v3-wave" width="260" height="54"></canvas>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;">
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(248,113,113,.75)"></div>Alpha</div>
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(251,191,36,.75)"></div>Beta</div>
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(52,211,153,.75)"></div>Theta</div>
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(96,165,250,.75)"></div>Delta</div>
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(167,139,250,.75)"></div>Gamma</div>
+          </div>
+        </div>
+        <div class="v3-panel">
+          <div class="v3-ptitle"><i data-lucide="activity"></i><span>Mental State</span></div>
+          <div class="v3-mcard-grid">
+            <div class="v3-mcard"><div class="v3-mname">Anxiety</div><div class="v3-mtrend" id="v3-anx-t">—</div><div class="v3-mval" id="v3-anx-v">—</div><div class="v3-mdenom">/10</div></div>
+            <div class="v3-mcard"><div class="v3-mname">Attention</div><div class="v3-mtrend" id="v3-att-t">—</div><div class="v3-mval" id="v3-att-v">—</div><div class="v3-mdenom">/10</div></div>
+            <div class="v3-mcard"><div class="v3-mname">Stability</div><div class="v3-mtrend" id="v3-stb-t">—</div><div class="v3-mval" id="v3-stb-v">—</div><div class="v3-mdenom">/10</div></div>
+          </div>
+        </div>
+        <div class="v3-panel">
+          <div class="v3-ptitle"><i data-lucide="info"></i><span>Recommendation</span></div>
+          <div class="v3-rec" id="v3-rec">The spatial experience will be updated after the first 30 seconds, based on your measured mental states.</div>
+        </div>
+      </div>
+    </div><!-- .v3-body -->
+
+    <div class="v3-footer">
+      <div class="v3-timer" id="v3-timer">00:00:00</div>
+      <button class="v3-pp" id="v3-pp" onclick="v3TogglePlay()">⏸</button>
+    </div>
+  </div><!-- #v3-session -->
+
+</div><!-- #v3 -->

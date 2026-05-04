@@ -1,0 +1,8 @@
+flask
+python-dotenv
+pandas
+numpy
+openai
+matplotlib
+python-osc
+websockets

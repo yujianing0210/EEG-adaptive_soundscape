@@ -1,0 +1,720 @@
+<script>
+/* ══════════════════════════════════════════════════════
+   V3: NeuroScape (CLAUDE.md spec) — self-contained demo
+   ══════════════════════════════════════════════════════ */
+const V3NS = (() => {
+  /* ── Mock EEG timeline (sampled at 30s) ── */
+  const EEG = [
+    { t:0,  bands:{alpha:.35,beta:.45,theta:.40,delta:.55,gamma:.30}, mental:{anxiety:3.2,attention:7.1,stability:7.4}, trend:{anxiety:'stable',attention:'stable',stability:'stable'} },
+    { t:30, bands:{alpha:.40,beta:.70,theta:.50,delta:.30,gamma:.40}, mental:{anxiety:8.2,attention:5.4,stability:6.0}, trend:{anxiety:'up',    attention:'down',  stability:'stable'} },
+    { t:60, bands:{alpha:.55,beta:.50,theta:.45,delta:.40,gamma:.35}, mental:{anxiety:6.0,attention:6.8,stability:7.5}, trend:{anxiety:'down',  attention:'up',    stability:'up'    } },
+    { t:90, bands:{alpha:.70,beta:.35,theta:.35,delta:.45,gamma:.25}, mental:{anxiety:3.5,attention:7.5,stability:8.2}, trend:{anxiety:'down',  attention:'up',    stability:'up'    } },
+  ];
+
+  /* ── Scene data ── */
+  const SOUNDS = {
+    ambient: ['Forest Wind Bed','Rain Ambience','Low Forest Hum','Morning Mist'],
+    event:   ['Distant Bird Call','Leaves Rustling','Wind Gust','Branch Creak'],
+    action:  ['Grass Footsteps','Soft Breathing','Fabric Rustle'],
+  };
+  const ACTIVE = [
+    {ambient:[0],    event:[],       action:[0]   },
+    {ambient:[0,2],  event:[0,2],    action:[0]   },
+    {ambient:[0,1,2],event:[0,1,2,3],action:[0,1] },
+    {ambient:[0,2],  event:[0,1],    action:[0,1] },
+  ];
+  const PHASES    = ['settling','immersion','adaptive_shift','integration'];
+  const DENSITIES = ['low','low','medium','low'];
+  const GUIDANCE  = [
+    'Now, imagine yourself in a rainforest.',
+    'Notice your breath while soft forest air surrounds you.',
+    'Let the gentle sounds guide you deeper into stillness.',
+    'Feel the ground beneath you. You are safe here.',
+  ];
+  const RECS = [
+    'The spatial experience will be updated after the first 30 seconds, based on your measured mental states.',
+    'if anxiety ↑:\n  reduce event density\n  increase low-frequency ambient\n\nif attention ↓:\n  add spatial movement\n  introduce directional cues',
+    'Anxiety decreasing. Stability improving.\n  maintain gentle event layer\n  allow richer spatial movement',
+    'System entering closing phase.\n  reduce density\n  fade event sounds\n  keep ambient soft',
+  ];
+  const FALLBACK_BY_CAT = {
+    ambient: SOUNDS.ambient,
+    event: SOUNDS.event,
+    action: SOUNDS.action,
+  };
+  const SCENE_VISUALS = {
+    forest: {
+      img:'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=2400&q=90',
+      accent:'154,139,238', orbA:'190,255,205', orbB:'120,224,255',
+    },
+    ocean: {
+      img:'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=2400&q=90',
+      accent:'76,170,255', orbA:'130,235,255', orbB:'80,150,255',
+    },
+    beach: {
+      img:'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=2400&q=90',
+      accent:'80,190,230', orbA:'150,245,255', orbB:'255,220,140',
+    },
+    rain: {
+      img:'https://images.unsplash.com/photo-1519692933481-e162a57d6721?auto=format&fit=crop&w=2400&q=90',
+      accent:'125,150,255', orbA:'170,210,255', orbB:'130,170,255',
+    },
+    mountain: {
+      img:'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=2400&q=90',
+      accent:'150,190,230', orbA:'210,240,255', orbB:'130,180,235',
+    },
+    snow: {
+      img:'https://images.unsplash.com/photo-1483664852095-d6cc6870702d?auto=format&fit=crop&w=2400&q=90',
+      accent:'170,210,255', orbA:'235,250,255', orbB:'160,210,255',
+    },
+    city: {
+      img:'https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=2400&q=90',
+      accent:'255,165,110', orbA:'255,190,120', orbB:'180,150,255',
+    },
+    desert: {
+      img:'https://images.unsplash.com/photo-1509316975850-ff9c5deb0cd9?auto=format&fit=crop&w=2400&q=90',
+      accent:'255,185,110', orbA:'255,225,150', orbB:'255,150,100',
+    },
+    default: {
+      img:'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=2400&q=90',
+      accent:'154,139,238', orbA:'190,255,205', orbB:'120,224,255',
+    },
+  };
+
+  /* ── Spatial sources ── */
+  const SRCS = [
+    {color:'rgba(130,200,130,.85)', angle:45,  dist:.72, vA:.008, vD:-.001, on:false},
+    {color:'rgba(100,180,210,.85)', angle:200, dist:.52, vA:-.006,vD:.002,  on:false},
+    {color:'rgba(210,180,100,.75)', angle:315, dist:.85, vA:.004, vD:-.003, on:false},
+  ];
+  const REAL_COLORS = [
+    'rgba(130,200,130,.88)',
+    'rgba(100,180,210,.88)',
+    'rgba(210,180,100,.84)',
+    'rgba(190,145,230,.84)',
+    'rgba(240,150,130,.82)',
+  ];
+  const v3Trails = {};
+  const v3MotionSeed = {};
+
+  /* ── State ── */
+  let sec=0, phaseIdx=0, playing=false;
+  let timerInt=null, mapRAF=null, waveRAF=null;
+  let stepInFlight=false;
+  let eegMode='{{ eeg_mode or "recorded" }}';
+  let userPrompt='';
+  let v3Bands={alpha:.35,beta:.45,theta:.4,delta:.55,gamma:.3};
+
+  /* ── Wave buffers ── */
+  const WN=260;
+  const WB = {alpha:new Float32Array(WN),beta:new Float32Array(WN),theta:new Float32Array(WN),delta:new Float32Array(WN),gamma:new Float32Array(WN)};
+  let wPh=0, wPos=0;
+
+  /* ── Navigation ── */
+  function goTo(page) {
+    if (mapRAF)  { cancelAnimationFrame(mapRAF);  mapRAF=null;  }
+    if (waveRAF) { cancelAnimationFrame(waveRAF); waveRAF=null; }
+    document.querySelectorAll('.v3-page').forEach(el=>el.classList.remove('v3-active'));
+    const el = document.getElementById('v3-'+page);
+    if (el) el.classList.add('v3-active');
+    if (page==='session') initSession();
+  }
+  function setMode(mode) {
+    eegMode = mode === 'realtime' ? 'realtime' : 'recorded';
+    document.querySelectorAll('[data-v3-mode]').forEach(btn=>{
+      btn.classList.toggle('on', btn.dataset.v3Mode === eegMode);
+    });
+  }
+
+  /* ── Home submit ── */
+  async function submit() {
+    const inp = document.getElementById('v3-prompt');
+    userPrompt = inp&&inp.value.trim() ? inp.value.trim() : 'I want a forest scene to get relaxed...';
+    goTo('loading');
+    let ok = false;
+    try {
+      const r = await fetch('/api/bootstrap', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({prompt:userPrompt, eeg_mode:eegMode})
+      });
+      const d = await r.json();
+      if (r.ok) {
+        applyState(d);
+        V2.payload = null;
+        phaseIdx = 0;
+        refreshScene();
+        ok = true;
+      } else {
+        throw new Error(d.error || `Bootstrap failed with ${r.status}`);
+      }
+    } catch(e) {
+      console.error('V3 bootstrap failed', e);
+      alert(`Scene generation failed: ${e.message || e}`);
+      goTo('home');
+      return;
+    }
+    setTimeout(()=>{
+      const sp=document.getElementById('v3-sess-prompt'); if(sp) sp.value=userPrompt;
+      refreshScene();
+      if (ok) goTo('session');
+    }, 650);
+  }
+
+  /* ── Session init ── */
+  function initSession() {
+    sec=0; phaseIdx=0; playing=true;
+    clearInterval(timerInt);
+    refreshScene();
+    renderFromPayload(V2.payload);
+    renderGuidance(0); renderRec(0);
+    updateSrcs(0);
+    startTimer(); scheduleMap(); scheduleWave();
+    animateV3UI();
+    processEEGStep();
+  }
+  function animateV3UI() {
+    if (!window.anime) return;
+    anime.remove('#v3-session .v3-panel, #v3-session .v3-center-card, #v3-session .v3-footer');
+    anime({
+      targets:'#v3-session .v3-panel, #v3-session .v3-center-card, #v3-session .v3-footer',
+      opacity:[0,1],
+      translateY:[14,0],
+      delay:anime.stagger(55),
+      duration:760,
+      easing:'easeOutCubic',
+    });
+  }
+
+  /* ── Timer ── */
+  function startTimer() {
+    timerInt = setInterval(()=>{
+      if (!playing) return;
+      sec++;
+      const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
+      const el=document.getElementById('v3-timer');
+      if (el) el.textContent=`${p2(h)}:${p2(m)}:${p2(s)}`;
+      const ni=Math.min(3,Math.floor(sec/30));
+      if (ni!==phaseIdx) {
+        phaseIdx=ni;
+        refreshScene();
+        renderFromPayload(V2.payload);
+        renderGuidance(ni); renderRec(ni);
+        updateSrcs(ni);
+        processEEGStep();
+      }
+    },1000);
+  }
+  function p2(n){return String(n).padStart(2,'0');}
+
+  function togglePlay() {
+    playing=!playing;
+    const btn=document.getElementById('v3-pp');
+    if (btn) btn.textContent=playing?'⏸':'▶';
+  }
+  async function processEEGStep() {
+    if (stepInFlight) return;
+    stepInFlight=true;
+    try {
+      const r=await fetch('/api/step', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({direction:'next'})
+      });
+      const d=await r.json();
+      if (r.ok) {
+        if (d.error && !d.current_payload) {
+          sEl('v3-rec', eegMode === 'realtime'
+            ? 'Waiting for realtime Muse EEG window...\nKeep Muse OSC streaming; the scene will update when a live window arrives.'
+            : d.error);
+          return;
+        }
+        applyState(d);
+        renderFromPayload(d.current_payload);
+        refreshScene();
+        const latest=(d.mental_history||[]).slice(-1)[0];
+        if (latest) renderRecFromMental(latest);
+      }
+    } catch(e) {
+      console.warn('V3 EEG step failed', e);
+    } finally {
+      stepInFlight=false;
+    }
+  }
+
+  /* ── Scene JSON ── */
+  function sceneType() {
+    return V2.scene?.scene_type || V2.scene?.world_state?.scene_family || 'scene';
+  }
+  function sceneVisual(sceneName) {
+    const key=String(sceneName||'').toLowerCase();
+    return Object.entries(SCENE_VISUALS).find(([k])=>key.includes(k))?.[1] || SCENE_VISUALS.default;
+  }
+  function applySceneVisual() {
+    const root=document.getElementById('v3');
+    if (!root) return;
+    const v=sceneVisual(sceneType());
+    root.style.setProperty('--v3-scene-img',`url('${v.img}')`);
+    root.style.setProperty('--v3-accent',v.accent);
+    root.style.setProperty('--v3-orb-a',v.orbA);
+    root.style.setProperty('--v3-orb-b',v.orbB);
+  }
+  function cleanName(value) {
+    const raw=String(value||'').replace(/\\/g,'/').split('/').pop() || 'sound';
+    return raw.replace(/\.(wav|mp3|ogg|flac|aiff|aif)$/i,'');
+  }
+  function displayName(source) {
+    return cleanName(source?.clip || source?.asset_ref || source?.source_id || source?.id || source);
+  }
+  function escHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#39;'
+    }[ch]));
+  }
+  function sceneSourceList() {
+    const active=new Set(V2.scene?.world_state?.active_sources || []);
+    const byId={};
+    (V2.scene?.sources || []).forEach(s=>{
+      const id=s.source_id || s.id || s.asset_ref;
+      if (id) byId[id]=s;
+    });
+    return renderableSources(V2.scene,V2.unityRuntime,V2.unityCommands).map(src=>{
+      const base=byId[src.id] || {};
+      return {
+        ...base,
+        ...src,
+        source_id: src.id || base.source_id,
+        category: base.category || (src.motion?.type && src.motion.type !== 'none' ? 'event' : 'ambient'),
+        asset_ref: base.asset_ref || src.clip || src.id,
+        active: src.isActive || active.has(src.id),
+      };
+    });
+  }
+  function groupedSceneSources() {
+    const groups={ambient:[],event:[],action:[]};
+    sceneSourceList().forEach(s=>{
+      const cat=(s.category||'ambient').toLowerCase();
+      const key=cat.includes('action')||cat.includes('narration')?'action':cat.includes('event')?'event':'ambient';
+      groups[key].push(s);
+    });
+    return groups;
+  }
+  function refreshScene() {
+    const st=sceneType();
+    applySceneVisual();
+    sEl('v3-prev-env',st);
+    sEl('v3-map-env',st);
+    sEl('v3-prev-desc',V2.scene?.atmosphere || `A ${st} soundscape is ready.`);
+    sEl('v3-prev-exp',V2.scene?.narration_script ? `"${V2.scene.narration_script}"` : '"Your adaptive soundscape will respond to the EEG session."');
+    renderJson();
+    renderPills();
+    renderGuidance(phaseIdx);
+  }
+  function renderJson() {
+    const el=document.getElementById('v3-scene-json'); if(!el) return;
+    const scene=V2.scene || {};
+    const names=sceneSourceList().map(s=>displayName(s));
+    const audioLines=names.slice(0,6).map(n=>`    "${n}"`).join(',\n');
+    el.textContent=`Scene = {
+  environment_type: "${sceneType()}"
+  atmosphere: "${scene.atmosphere || 'waiting for generated scene'}"
+  narration: "${scene.narration_script || ''}"
+  active_audio: [
+${audioLines}${names.length>6 ? ',\n    ...' : ''}
+  ]
+  phase: ${phaseIdx+1}/4 → ${PHASES[phaseIdx]}
+  density: ${DENSITIES[phaseIdx]} → ${DENSITIES[Math.min(3,phaseIdx+1)]}
+  dynamics: ${phaseIdx===2?'active':'stable'}
+}`;
+  }
+
+  /* ── Sound pills ── */
+  function renderPills() {
+    const groups=groupedSceneSources();
+    mkPills('v3-ambient',groups.ambient,FALLBACK_BY_CAT.ambient);
+    mkPills('v3-event',  groups.event,  FALLBACK_BY_CAT.event);
+    mkPills('v3-action', groups.action, FALLBACK_BY_CAT.action);
+  }
+  function mkPills(id,sources,fallbackNames) {
+    const el=document.getElementById(id); if(!el) return;
+    const items=sources.length?sources:fallbackNames.map(n=>({asset_ref:n,active:false}));
+    el.innerHTML=items.map(s=>{
+      const name=displayName(s);
+      return `<span class="v3-pill${s.active?' on':''}" title="${escHtml(name)}">${escHtml(name)}</span>`;
+    }).join('');
+  }
+
+  /* ── EEG bars ── */
+  const BCOLORS={alpha:'rgba(248,113,113,.8)',beta:'rgba(251,191,36,.8)',theta:'rgba(52,211,153,.8)',delta:'rgba(96,165,250,.8)',gamma:'rgba(167,139,250,.8)'};
+  const BLABELS={alpha:'Alpha',beta:'Beta',theta:'Theta',delta:'Delta',gamma:'Gamma'};
+  function renderBars(bands) {
+    const el=document.getElementById('v3-eeg-bars'); if(!el) return;
+    v3Bands={...v3Bands,...bands};
+    el.innerHTML=`<div class="v3-band-chart">${Object.entries(bands).map(([k,v])=>`
+      <div class="v3-band-bar">
+        <div class="v3-band-name">${BLABELS[k]}</div>
+        <div class="v3-band-fill" data-band="${k}" data-base="${Math.max(.08,Math.min(1,v))}" style="height:${Math.round(Math.max(.08,Math.min(1,v))*66)}px;background:${BCOLORS[k]}"></div>
+      </div>`).join('')}</div>`;
+  }
+  function updateBandBars() {
+    document.querySelectorAll('#v3-eeg-bars .v3-band-fill').forEach((el,i)=>{
+      const key=el.dataset.band;
+      const base=normBand(v3Bands[key] ?? Number(el.dataset.base) ?? .2);
+      const pulse=Math.sin((performance.now()*.0022)+(i*1.3))*.08 + Math.sin((performance.now()*.0047)+(i*.7))*.035;
+      const live=Math.max(.06,Math.min(1,base+pulse));
+      el.style.height=`${Math.round(live*66)}px`;
+      el.dataset.base=String(base);
+    });
+  }
+
+  /* ── Mental state cards ── */
+  const TMAP={up:'<span class="v3tu">↑</span>',down:'<span class="v3td">↓</span>',stable:'<span class="v3ts">—</span>'};
+  function normBand(v) {
+    const n=Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0,Math.min(1,n));
+  }
+  function score10(v) {
+    const n=Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0,Math.min(10,n));
+  }
+  function renderFromPayload(payload) {
+    const f=payload?.current_features;
+    if (!f) {
+      renderBars(EEG[phaseIdx]?.bands || EEG[0].bands);
+      renderMental(EEG[phaseIdx] || EEG[0]);
+      return;
+    }
+    renderBars({
+      alpha:normBand(f.alpha_mean),
+      beta:normBand(f.beta_mean),
+      theta:normBand(f.theta_mean),
+      delta:normBand(f.delta_mean),
+      gamma:normBand(f.gamma_mean),
+    });
+    const attention=score10(f.attention_score);
+    const stability=score10(f.stability_score);
+    const relaxation=score10(f.relaxation_score);
+    renderMental({
+      mental:{
+        anxiety:score10(10-relaxation),
+        attention,
+        stability,
+      },
+      trend:{
+        anxiety:payload.current_rule_state==='distracted_or_unstable'?'up':'stable',
+        attention:attention>=5?'up':'down',
+        stability:stability>=5?'up':'down',
+      }
+    });
+  }
+  function renderMental({mental,trend}) {
+    sEl('v3-anx-v',mental.anxiety.toFixed(1));   sHTML('v3-anx-t',TMAP[trend.anxiety]  ||'—');
+    sEl('v3-att-v',mental.attention.toFixed(1));  sHTML('v3-att-t',TMAP[trend.attention]||'—');
+    sEl('v3-stb-v',mental.stability.toFixed(1));  sHTML('v3-stb-t',TMAP[trend.stability]||'—');
+  }
+  function sEl(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
+  function sHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h;}
+  function renderGuidance(i){sEl('v3-guidance',V2.scene?.narration_script || GUIDANCE[i] || GUIDANCE[0]);}
+  function renderRec(i){sEl('v3-rec',RECS[i]||RECS[0]);}
+  function renderRecFromMental(item) {
+    sEl('v3-rec',`EEG window ${item.window_id ?? '?'}\nstate: ${item.llm_state || item.rule_state || 'unknown'}\ntrend: ${item.trend || 'stable'}\nconfidence: ${item.confidence != null ? Number(item.confidence).toFixed(2) : '–'}`);
+  }
+
+  /* ── Spatial sources ── */
+  function updateSrcs(pi) {
+    SRCS.forEach((s,i)=>{ s.on = i<(pi===0?0:pi===1?2:3); });
+  }
+  function currentUnitySources() {
+    const freshRuntime=freshUnityRuntime(V2.unityRuntime);
+    const sources=renderableSources(V2.scene, freshRuntime, V2.unityCommands);
+    return freshRuntime ? sources : animateV3Sources(sources);
+  }
+  function idSeed(id) {
+    if (v3MotionSeed[id] != null) return v3MotionSeed[id];
+    let h=0;
+    String(id).split('').forEach(ch=>{ h=((h<<5)-h)+ch.charCodeAt(0); h|=0; });
+    v3MotionSeed[id]=Math.abs(h%10000)/10000;
+    return v3MotionSeed[id];
+  }
+  function withPosShape(original, x, y, z) {
+    if (Array.isArray(original)) return [x,y,z];
+    return {x,y,z};
+  }
+  function animateV3Sources(sources) {
+    const t=performance.now()/1000;
+    return sources.map(src=>{
+      const motion=src.motion;
+      if (!motion || motion.type==='none') return src;
+      const {x,z}=srcXZ(src.position);
+      const y=Array.isArray(src.position) ? (src.position[1]||0) : (src.position?.y||0);
+      const seed=idSeed(src.id);
+      let nx=x, nz=z;
+      if (motion.type==='circle' || motion.type==='orbit' || motion.type==='slow_orbit') {
+        const speed=Math.max(.04,Number(motion.speed)||.22);
+        const radius=Math.max(.25,Number(motion.radius)||1.2);
+        const phase=seed*Math.PI*2;
+        nx=x+Math.cos(t*speed+phase)*radius;
+        nz=z+Math.sin(t*speed+phase)*radius;
+      } else if (motion.type==='breathing') {
+        const speed=Math.max(.04,Number(motion.speed)||.2);
+        const minR=Number(motion.minRadius)||.4;
+        const maxR=Number(motion.maxRadius)||1.5;
+        const radius=minR+(maxR-minR)*((Math.sin(t*speed+seed*Math.PI*2)+1)*.5);
+        nx=x+radius*.7;
+        nz=z+radius*.7;
+      } else if (motion.type==='random') {
+        nx=x+Math.sin(t*.7+seed*9)*.55;
+        nz=z+Math.cos(t*.53+seed*11)*.55;
+      }
+      return {...src,position:withPosShape(src.position,nx,y,nz),isActive:true};
+    });
+  }
+  function sourceCanvasPoint(position, cx, cy, rO) {
+    const {x,z}=srcXZ(position);
+    const nx=Math.max(-1,Math.min(1,x/MAX_D));
+    const nz=Math.max(-1,Math.min(1,z/MAX_D));
+    return {x:cx+nx*rO, y:cy-nz*rO};
+  }
+  function drawSourceLabel(ctx, id, x, y, sz) {}
+  function v3RGB(name, fallback) {
+    const root=document.getElementById('v3');
+    return (root ? getComputedStyle(root).getPropertyValue(name).trim() : '') || fallback;
+  }
+  function drawLiveSources(ctx, sources, cx, cy, rO, sz) {
+    const orbA=v3RGB('--v3-orb-a','190,255,205');
+    const seen=new Set();
+    sources.forEach((src,i)=>{
+      const id=src.id||String(i);
+      seen.add(id);
+      const p=sourceCanvasPoint(src.position,cx,cy,rO);
+      const volume=clamp01(src.volume);
+      const isActive=!!src.isActive;
+      const color=REAL_COLORS[i%REAL_COLORS.length];
+      const rr=Math.max(9,volumeRadius(volume)*.62);
+
+      if (!v3Trails[id]) v3Trails[id]=[];
+      const tr=v3Trails[id];
+      const last=tr[tr.length-1];
+      if (!last || Math.abs(last.x-p.x)>.35 || Math.abs(last.y-p.y)>.35) {
+        tr.push(p);
+        if (tr.length>16) tr.shift();
+      }
+
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+
+      const afterimages=tr.slice(-10);
+      afterimages.forEach((pt,j)=>{
+        const a=(j+1)/afterimages.length;
+        const ghostR=rr*(.62+a*.58);
+        const streakLen=rr*(2.05+a*4.2);
+        const streak=ctx.createLinearGradient(pt.x,pt.y-streakLen,pt.x,pt.y+streakLen*.45);
+        streak.addColorStop(0,'transparent');
+        streak.addColorStop(.34,color.replace(/[\d.]+\)$/,(.03+a*.13).toFixed(3)+')'));
+        streak.addColorStop(.53,`rgba(${orbA},${(.032+a*.12).toFixed(3)})`);
+        streak.addColorStop(1,'transparent');
+        ctx.filter=`blur(${Math.max(3.2, rr*(.28+(1-a)*.34))}px)`;
+        ctx.beginPath();
+        ctx.ellipse(pt.x,pt.y,ghostR*.48,streakLen,0,0,Math.PI*2);
+        ctx.fillStyle=streak;
+        ctx.fill();
+
+        const ghost=ctx.createRadialGradient(pt.x-ghostR*.12,pt.y-ghostR*.14,0,pt.x,pt.y,ghostR*1.35);
+        ghost.addColorStop(0,`rgba(255,255,255,${.04+a*.12})`);
+        ghost.addColorStop(.24,`rgba(${orbA},${.045+a*.11})`);
+        ghost.addColorStop(.72,color.replace(/[\d.]+\)$/,(.032+a*.12).toFixed(3)+')'));
+        ghost.addColorStop(1,'transparent');
+        ctx.filter=`blur(${Math.max(1.4, rr*(.16+(1-a)*.14))}px)`;
+        ctx.beginPath();
+        ctx.arc(pt.x,pt.y,ghostR,0,Math.PI*2);
+        ctx.fillStyle=ghost;
+        ctx.fill();
+      });
+
+      ctx.filter=`blur(${Math.max(6,rr*.7)}px)`;
+      const halo=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,rr*(isActive?3.9:3.1));
+      halo.addColorStop(0,color.replace(/[\d.]+\)$/,'0.075)'));
+      halo.addColorStop(.48,`rgba(${orbA},.04)`);
+      halo.addColorStop(1,'transparent');
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,rr*(isActive?3.9:3.1),0,Math.PI*2);
+      ctx.fillStyle=halo;
+      ctx.fill();
+
+      ctx.filter='none';
+      const core=ctx.createRadialGradient(p.x-rr*.12,p.y-rr*.14,0,p.x,p.y,rr*1.5);
+      core.addColorStop(0,'rgba(255,255,255,.34)');
+      core.addColorStop(.24,`rgba(${orbA},.28)`);
+      core.addColorStop(.66,color.replace(/[\d.]+\)$/,'0.26)'));
+      core.addColorStop(1,'transparent');
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,rr*1.52,0,Math.PI*2);
+      ctx.fillStyle=core;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,Math.max(1.8,rr*.16),0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,.28)';
+      ctx.fill();
+      ctx.restore();
+    });
+    Object.keys(v3Trails).forEach(id=>{ if(!seen.has(id)) delete v3Trails[id]; });
+  }
+
+  /* ── Spatial map (canvas RAF loop) ── */
+  function scheduleMap() {
+    const cv=document.getElementById('v3-map'); if(!cv) return;
+    const parent=cv.parentElement;
+    const raw=Math.min(parent.clientWidth-42, parent.clientHeight-96, 560);
+    const sz=Math.max(280,raw);
+    const dpr=Math.min(2.5,window.devicePixelRatio||1);
+    cv.style.width=`${sz}px`;
+    cv.style.height=`${sz}px`;
+    cv.width=Math.round(sz*dpr);
+    cv.height=Math.round(sz*dpr);
+    cv.dataset.mapSize=String(sz);
+    cv.dataset.mapDpr=String(dpr);
+    drawMap();
+  }
+  function drawMap() {
+    const cv=document.getElementById('v3-map'); if(!cv) return;
+    const ctx=cv.getContext('2d');
+    const sz=Number(cv.dataset.mapSize)||cv.clientWidth||cv.width;
+    const dpr=Number(cv.dataset.mapDpr)||1;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    const cx=sz/2, cy=sz/2;
+    const rO=sz*.475, rM=sz*.325, rI=sz*.185;
+    ctx.clearRect(0,0,sz,sz);
+
+    /* rings */
+    const ringLabels=[
+      {r:rO,lbl:'FAR',sub:'[6m,+∞]',y:sz-sz*.072},
+      {r:rM,lbl:'MIDDLE',sub:'[3m,6m]',y:Math.min(cy+rM+sz*.038, sz-sz*.17)},
+      {r:rI,lbl:'NEAR',sub:'[0,3m]',y:Math.min(cy+rI+sz*.038, cy+rM-sz*.022)},
+    ];
+    ringLabels.forEach(({r,lbl,sub,y})=>{
+      ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle='rgba(255,255,255,.135)';
+      ctx.lineWidth=.72;
+      ctx.shadowColor='rgba(255,255,255,.055)';
+      ctx.shadowBlur=8;
+      ctx.stroke();
+      ctx.shadowBlur=0;
+      ctx.fillStyle='rgba(255,255,255,.34)';
+      ctx.textAlign='center';
+      ctx.font=`500 ${Math.max(9,sz*.022)}px Inter, Arial`;
+      ctx.fillText(lbl,cx,y);
+      ctx.fillStyle='rgba(255,255,255,.24)';
+      ctx.font=`300 ${Math.max(7,sz*.017)}px Inter, Arial`;
+      ctx.fillText(sub,cx,y+sz*.023);
+    });
+
+    const liveSources=currentUnitySources();
+    if (liveSources.length) {
+      drawLiveSources(ctx,liveSources,cx,cy,rO,sz);
+    } else {
+      /* sound sources */
+      SRCS.forEach(src=>{
+        if (!src.on) return;
+        const rad=src.angle*Math.PI/180;
+        const r=src.dist*rO;
+        const sx=cx+Math.cos(rad)*r, sy=cy-Math.sin(rad)*r;
+        const rr=12;
+        const g=ctx.createRadialGradient(sx,sy,0,sx,sy,42);
+        g.addColorStop(0,src.color);
+        g.addColorStop(.42,'rgba(255,255,255,.1)');
+        g.addColorStop(1,'transparent');
+        ctx.beginPath(); ctx.arc(sx,sy,42,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
+        ctx.save();
+        ctx.shadowColor=src.color; ctx.shadowBlur=16;
+        const orb=ctx.createRadialGradient(sx-5,sy-6,1,sx,sy,rr);
+        orb.addColorStop(0,'rgba(255,255,255,.72)');
+        orb.addColorStop(.35,src.color);
+        orb.addColorStop(1,'rgba(110,190,230,.72)');
+        ctx.beginPath(); ctx.arc(sx,sy,rr,0,Math.PI*2); ctx.fillStyle=orb; ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,.4)'; ctx.lineWidth=.9; ctx.stroke();
+        ctx.restore();
+      });
+    }
+
+    /* YOU dot */
+    ctx.save();
+    ctx.shadowColor='rgba(255,255,255,.22)';
+    ctx.shadowBlur=8;
+    ctx.beginPath(); ctx.arc(cx,cy,5.2,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,.52)'; ctx.fill();
+    ctx.restore();
+    ctx.fillStyle='rgba(255,255,255,.46)'; ctx.textAlign='center';
+    ctx.font=`400 ${Math.max(9,sz*.022)}px Inter, Arial`; ctx.fillText('YOU',cx,cy+sz*.055);
+
+    if (!liveSources.length) {
+      /* animate sources */
+      SRCS.forEach(s=>{
+        s.angle+=s.vA; s.dist+=s.vD;
+        if (s.dist>.94||s.dist<.15) s.vD*=-1;
+      });
+    }
+    mapRAF=requestAnimationFrame(drawMap);
+  }
+
+  /* ── EEG waveform (canvas RAF loop) ── */
+  function scheduleWave() { tickWave(); }
+  function prepCanvas(canvas) {
+    const rect=canvas.getBoundingClientRect();
+    const dpr=Math.min(2.5,window.devicePixelRatio||1);
+    const w=Math.max(1,Math.round(rect.width*dpr));
+    const h=Math.max(1,Math.round(rect.height*dpr));
+    if (canvas.width!==w || canvas.height!==h) {
+      canvas.width=w;
+      canvas.height=h;
+      canvas.dataset.dpr=String(dpr);
+    }
+    return {w:rect.width,h:rect.height,dpr};
+  }
+  function tickWave() {
+    const b=EEG[phaseIdx]?EEG[phaseIdx].bands:EEG[0].bands;
+    const n=()=>(Math.random()-.5)*.035;
+    WB.alpha[wPos%WN]=b.alpha*.68*Math.sin(2*Math.PI*.08*wPh)+n();
+    WB.beta [wPos%WN]=b.beta *.58*Math.sin(2*Math.PI*.15*wPh+.8)+n();
+    WB.theta[wPos%WN]=b.theta*.5 *Math.sin(2*Math.PI*.05*wPh+1.5)+n();
+    WB.delta[wPos%WN]=b.delta*.42*Math.sin(2*Math.PI*.03*wPh+2.1)+n();
+    WB.gamma[wPos%WN]=b.gamma*.38*Math.sin(2*Math.PI*.22*wPh+.3)+n();
+    wPos++; wPh++;
+    const cv=document.getElementById('v3-wave'); if(!cv) { waveRAF=requestAnimationFrame(tickWave); return; }
+    const ctx=cv.getContext('2d');
+    const dims=prepCanvas(cv);
+    const W=dims.w,H=dims.h,mid=H/2,sc=H*.38;
+    ctx.setTransform(dims.dpr,0,0,dims.dpr,0,0);
+    ctx.clearRect(0,0,W,H);
+    updateBandBars();
+    [[WB.delta,'rgba(96,165,250,.5)'],[WB.theta,'rgba(52,211,153,.55)'],[WB.beta,'rgba(251,191,36,.55)'],[WB.gamma,'rgba(167,139,250,.5)'],[WB.alpha,'rgba(248,113,113,.7)']].forEach(([buf,col])=>{
+      ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.beginPath();
+      for(let i=0;i<WN;i++){const v=buf[(wPos+i)%WN],x=(i/WN)*W,y=mid+v*sc; i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+      ctx.stroke();
+    });
+    waveRAF=requestAnimationFrame(tickWave);
+  }
+
+  /* ── Enter key on home input ── */
+document.addEventListener('DOMContentLoaded',()=>{
+    const inp=document.getElementById('v3-prompt');
+    if (inp) inp.addEventListener('keydown',e=>{ if(e.key==='Enter') submit(); });
+    if (window.lucide) window.lucide.createIcons();
+  });
+
+  document.addEventListener('DOMContentLoaded',()=>setMode(eegMode));
+  window.addEventListener('resize',()=>{ if (document.getElementById('v3-session')?.classList.contains('v3-active')) scheduleMap(); });
+
+  return {goTo, submit, togglePlay, refreshScene, setMode};
+})();
+
+function v3Submit()    { V3NS.submit(); }
+function v3GoTo(p)     { V3NS.goTo(p); }
+function v3TogglePlay(){ V3NS.togglePlay(); }
+function v3SetMode(m)  { V3NS.setMode(m); }
+</script>

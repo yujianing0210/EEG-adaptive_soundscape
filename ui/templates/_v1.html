@@ -1,0 +1,102 @@
+<!-- ══════════════════════════════════════════════
+     V1  —  original interface (unchanged)
+     ══════════════════════════════════════════════ -->
+<div id="v1" class="tab-pane">
+  <header>
+    <div>
+      <div style="font-size:18px;font-weight:700;">EEG-Adaptive Spatial Audio MVP</div>
+      <div style="font-size:12px;color:#94a3b8;">Prompt → Scene → EEG windows → Adapted Unity JSON</div>
+    </div>
+    <div style="font-size:12px;color:#94a3b8;">EEG file: {{ eeg_path }}</div>
+  </header>
+  <main>
+    <section style="grid-column:1/span 2;">
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}<div class="flash">{{ messages[-1] }}</div>{% endif %}
+      {% endwith %}
+      <form action="/bootstrap" method="post">
+        <input type="text" name="prompt" placeholder="e.g., I want a forest scene" value="{{ prompt or '' }}" />
+        <button type="submit">Bootstrap scene</button>
+        <div style="margin-left:16px;display:flex;gap:12px;align-items:center;font-size:12px;color:#cbd5e1;">
+          <label><input type="radio" name="eeg_mode" value="recorded" {% if eeg_mode != 'realtime' %}checked{% endif %}> Pre-recorded CSV</label>
+          <label><input type="radio" name="eeg_mode" value="realtime" {% if eeg_mode == 'realtime' %}checked{% endif %}> Real-time OSC</label>
+        </div>
+      </form>
+      {% if realtime_active %}<div style="margin-top:8px;font-size:12px;color:#34d399;">Realtime EEG session active</div>{% endif %}
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+        <form action="/step" method="post">
+          <button type="submit" name="direction" value="previous" {% if current_idx <= 0 %}disabled{% endif %}>Previous EEG Window</button>
+          <button type="submit" name="direction" value="next">Next EEG Window</button>
+        </form>
+        {% if realtime_active %}
+        <form action="/stop_realtime" method="post">
+          <button type="submit" style="background:#ef4444;color:#fff;">Stop Realtime</button>
+        </form>
+        {% endif %}
+        <div style="font-size:12px;color:#94a3b8;">Window {{ current_idx+1 if current_idx>=0 else 0 }} / {{ total_windows }}</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Current Scene</h2>
+      {% if scene %}
+        <div class="panel-title">Scene Type</div><div class="pill" id="scene-type">{{ scene.scene_type }}</div>
+        <div class="panel-title">Atmosphere</div><div id="scene-atmosphere">{{ scene.atmosphere }}</div>
+        <div class="panel-title">Narration</div><div style="font-size:12px;color:#cbd5e1;" id="scene-narration">{{ scene.narration_script }}</div>
+        <div class="panel-title">Unity JSON</div><pre id="scene-json">{{ scene | tojson(indent=2) }}</pre>
+      {% else %}
+        <div>Bootstrap to generate an initial scene.</div>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>EEG Analysis</h2>
+      <div class="panel-title">Window ID</div><div class="pill" id="eeg-window-id">{{ current_payload.window_id if current_payload else 'N/A' }}</div>
+      <div class="panel-title">Rule state</div><div class="pill" id="eeg-rule-state">{{ current_payload.current_rule_state if current_payload else 'N/A' }}</div>
+      <div class="panel-title">Key ratios</div>
+      <div style="font-size:12px;" id="eeg-key-ratios">α/β: {{ '%.2f' % current_payload.current_features['alpha_beta_ratio'] if current_payload and current_payload.current_features and current_payload.current_features['alpha_beta_ratio'] is not none else '–' }}</div>
+      <div class="panel-title">Payload</div><pre id="eeg-payload">{{ current_payload | tojson(indent=2) if current_payload else '{}' }}</pre>
+    </section>
+
+    <section style="grid-column:1/span 2;">
+      <h2>Realtime EEG Monitor</h2>
+      <div id="realtime-status" style="font-size:12px;color:#cbd5e1;margin-bottom:6px;">Realtime plot will appear here when OSC data arrives.</div>
+      <canvas id="eeg-plot" width="760" height="240" style="width:100%;height:240px;background:#0b1221;border:1px solid #334155;border-radius:8px;"></canvas>
+      <div id="realtime-summary" style="margin-top:12px;font-size:12px;color:#e2e8f0;line-height:1.5;"></div>
+    </section>
+
+    <section>
+      <h2>Sound Library</h2>
+      <div class="panel-title">Available assets</div>
+      <div>
+        {% set active = scene.world_state.active_sources if scene and scene.world_state else [] %}
+        {% for asset in library %}
+          <div class="pill {% if asset.asset_id in active %}active-pill{% endif %}">{{ asset.asset_id }}</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Active Sources</h2>
+      {% if scene %}
+        {% for src in scene.sources %}
+          <div class="panel-title">{{ src.source_id }}</div>
+          <div style="font-size:12px;color:#cbd5e1;">vol {{ src.volume }} | pos {{ src.position }}</div>
+        {% endfor %}
+      {% else %}
+        <div>None yet.</div>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Adaptation Rationale</h2>
+      {% if mental_history %}
+        {% for item in mental_history %}
+          <div style="margin-bottom:6px;font-size:12px;">Window {{ item.window_id }}: {{ item.rule_state }} → {{ item.llm_state }} ({{ item.trend }}) conf {{ '%.2f' % item.confidence if item.confidence else '' }}{% if item.auto_summary %} – auto summary{% endif %}</div>
+        {% endfor %}
+      {% else %}
+        <div>Steps will appear here.</div>
+      {% endif %}
+    </section>
+  </main>
+</div><!-- #v1 -->

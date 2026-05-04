@@ -1,0 +1,143 @@
+<style>
+/* ════════════════════════════════
+       V2 — dreamcore styles
+       ════════════════════════════════ */
+    #v2 { position: relative; min-height: 100vh; padding-top: 44px; overflow: hidden; }
+
+    /* Scene background */
+    .v2-bg {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
+      background: #0d1520;
+      transition: background 2.5s ease;
+    }
+    .v2-bg .blob {
+      position: absolute; border-radius: 50%;
+      filter: blur(100px); opacity: 0.38;
+      transition: background 2.5s ease;
+    }
+    .blob-1 { width: 55vw; height: 55vh; top: -15%; left: -12%; animation: bd1 28s ease-in-out infinite; }
+    .blob-2 { width: 45vw; height: 45vh; bottom: -12%; right: -8%; animation: bd2 34s ease-in-out infinite; }
+    .blob-3 { width: 38vw; height: 38vh; top: 28%; left: 38%; animation: bd3 22s ease-in-out infinite; }
+    @keyframes bd1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(3vw,-4vh)} }
+    @keyframes bd2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-3vw,4vh)} }
+    @keyframes bd3 { 0%,100%{transform:translate(0,0)} 33%{transform:translate(2vw,-3vh)} 66%{transform:translate(-2vw,2vh)} }
+
+    /* Frosted glass */
+    .glass {
+      background: rgba(255,255,255,0.055);
+      backdrop-filter: blur(28px) saturate(1.2);
+      -webkit-backdrop-filter: blur(28px) saturate(1.2);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 18px;
+    }
+
+    .v2-content {
+      position: relative; z-index: 1;
+      padding: 8px 14px 14px;
+      display: flex; flex-direction: column; gap: 9px;
+    }
+
+    /* Header */
+    .v2-header { padding: 12px 16px; display: flex; flex-direction: column; gap: 9px; }
+    .v2-header-top { display: flex; justify-content: space-between; align-items: center; }
+    .v2-title { font-size: 13px; font-weight: 300; letter-spacing: 0.14em; color: rgba(255,255,255,0.65); text-transform: uppercase; }
+    .v2-subtitle { font-size: 10px; color: rgba(255,255,255,0.28); letter-spacing: 0.06em; margin-top: 2px; }
+    .v2-live-badge { font-size: 10px; color: rgba(52,211,153,0.85); letter-spacing: 0.08em; display: none; }
+    .v2-form-row { display: flex; gap: 7px; align-items: center; }
+    .v2-input {
+      flex: 1; padding: 8px 15px; border-radius: 26px;
+      border: 1px solid rgba(255,255,255,0.13);
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.82); font-size: 13px; outline: none;
+      letter-spacing: 0.03em;
+    }
+    .v2-input::placeholder { color: rgba(255,255,255,0.25); }
+    .v2-input:focus { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.08); }
+    .v2-mode { font-size: 11px; color: rgba(255,255,255,0.38); display: flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+    .v2-mode input { accent-color: rgba(255,255,255,0.5); }
+    .vbtn {
+      padding: 7px 16px; border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 26px; background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.75); font-size: 12px; cursor: pointer;
+      letter-spacing: 0.05em; transition: all 0.18s; white-space: nowrap;
+    }
+    .vbtn:hover:not(:disabled) { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.32); color: #fff; }
+    .vbtn:disabled { opacity: 0.3; cursor: default; }
+    .vbtn.primary { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.32); color: #fff; }
+    .vbtn.danger { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.35); color: rgba(255,140,140,0.9); }
+    .vbtn.auto-on { background: rgba(52,211,153,0.12); border-color: rgba(52,211,153,0.38); color: rgba(52,211,153,0.9); }
+    .v2-ctrl-row { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+    .v2-win-count { font-size: 10px; color: rgba(255,255,255,0.28); margin-left: auto; letter-spacing: 0.06em; }
+
+    /* Main grid */
+    .v2-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 9px; }
+
+    /* ── Spatial field card ── */
+    .spatial-card {
+      padding: 18px 14px 14px;
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      min-height: 460px; justify-content: center;
+    }
+    #spatial-svg { width: 100%; max-width: 370px; height: auto; }
+    .svg-ring { fill: none; stroke-width: 1; }
+    .ring-outer { stroke: rgba(255,255,255,0.06); }
+    .ring-mid   { stroke: rgba(255,255,255,0.09); }
+    .ring-inner { stroke: rgba(255,255,255,0.13); stroke-dasharray: 3 5; }
+    .ring-lbl   { fill: rgba(255,255,255,0.18); font-size: 8px; font-family: Arial, sans-serif; letter-spacing: 0.12em; }
+    .listener-dot  { fill: rgba(255,255,255,0.92); }
+    .listener-ring { fill: none; stroke: rgba(255,255,255,0.12); stroke-width: 1; }
+    .src-halo { fill: rgba(255,255,255,0.025); transition: r 0.18s linear, opacity 0.18s linear; }
+    .src-circle { fill: rgba(255,255,255,0.1); stroke: rgba(255,255,255,0.32); stroke-width: 1; transition: r 0.18s linear, fill 0.18s linear, stroke 0.18s linear; }
+    .src-circle.active { fill: rgba(255,255,255,0.2); stroke: rgba(255,255,255,0.65); stroke-width: 1.5; }
+    .src-txt { fill: rgba(255,255,255,0.72); font-size: 6.5px; font-family: Arial, sans-serif; text-anchor: middle; dominant-baseline: middle; letter-spacing: 0.06em; }
+    .src-trail { fill: none; stroke: rgba(255,255,255,0.07); stroke-width: 1; }
+    .field-empty { fill: rgba(255,255,255,0.18); font-size: 10px; font-family: Arial, sans-serif; text-anchor: middle; letter-spacing: 0.14em; }
+    .scene-strip { width: 100%; display: flex; flex-direction: column; gap: 4px; padding: 0 2px; }
+    .scene-type-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.18em; color: rgba(255,255,255,0.4); }
+    .scene-atm  { font-size: 12px; color: rgba(255,255,255,0.58); font-weight: 300; line-height: 1.4; }
+    .scene-narr { font-size: 10px; color: rgba(255,255,255,0.28); line-height: 1.5; }
+
+    /* ── Right column ── */
+    .v2-right { display: flex; flex-direction: column; gap: 9px; }
+
+    /* EEG state card */
+    .eeg-state-card { padding: 16px; }
+    .card-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 0.16em; color: rgba(255,255,255,0.27); margin-bottom: 12px; }
+    .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .state-col { display: flex; flex-direction: column; gap: 7px; }
+    .state-col-hd { font-size: 8px; text-transform: uppercase; letter-spacing: 0.12em; color: rgba(255,255,255,0.22); padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .state-badge { display: inline-block; padding: 3px 10px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.18); font-size: 9px; color: rgba(255,255,255,0.65); letter-spacing: 0.1em; text-transform: uppercase; width: fit-content; }
+    .mrow { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+    .mk { font-size: 9px; color: rgba(255,255,255,0.3); }
+    .mv { font-size: 15px; font-weight: 200; color: rgba(255,255,255,0.82); letter-spacing: -0.01em; }
+    .d-up   { font-size: 9px; color: rgba(52,211,153,0.8); }
+    .d-dn   { font-size: 9px; color: rgba(251,113,133,0.8); }
+    .d-flat { font-size: 9px; color: rgba(255,255,255,0.25); }
+
+    /* EEG wave card */
+    .eeg-wave-card { padding: 16px; }
+    #v2-eeg-cv { width: 100%; height: 76px; display: block; border-radius: 8px; margin-top: 8px; }
+    .wave-legend { display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+    .wl-item { display: flex; align-items: center; gap: 5px; font-size: 9px; color: rgba(255,255,255,0.32); }
+    .wl-dot { width: 10px; height: 2px; border-radius: 1px; }
+
+    /* Controls card */
+    .ctrl-card { padding: 13px 16px; display: flex; flex-direction: column; gap: 9px; }
+    .speed-row { display: flex; gap: 5px; align-items: center; }
+    .speed-lbl { font-size: 9px; color: rgba(255,255,255,0.28); white-space: nowrap; }
+    .spd-btn { padding: 3px 10px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); background: transparent; color: rgba(255,255,255,0.35); font-size: 9px; cursor: pointer; transition: all 0.15s; }
+    .spd-btn.on { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.72); }
+    .prog-wrap { height: 2px; background: rgba(255,255,255,0.06); border-radius: 1px; overflow: hidden; }
+    .prog-bar  { height: 100%; background: rgba(255,255,255,0.28); border-radius: 1px; width: 0%; transition: width 0.1s linear; }
+
+    /* Adaptation log */
+    .log-card { padding: 13px 16px; max-height: 130px; overflow-y: auto; }
+    .log-entry { font-size: 10px; color: rgba(255,255,255,0.38); padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); line-height: 1.4; }
+    .log-entry:last-child { border-bottom: none; }
+    .log-win { color: rgba(255,255,255,0.22); font-size: 9px; }
+    .log-st  { color: rgba(255,255,255,0.56); }
+
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+</style>

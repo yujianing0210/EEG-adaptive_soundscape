@@ -1,0 +1,415 @@
+<script>
+/* ══════════════════════════════════════════════════════
+   V2: initial state from server
+   ══════════════════════════════════════════════════════ */
+let V2 = {
+  scene:         {{ scene | tojson if scene else 'null' }},
+  payload:       {{ current_payload | tojson if current_payload else 'null' }},
+  idx:           {{ current_idx }},
+  total:         {{ total_windows }},
+  history:       {{ mental_history | tojson }},
+  rtActive:      {{ 'true' if realtime_active else 'false' }},
+  unityRuntime:  null,
+  unityCommands: [],
+};
+
+/* ── Scene themes ── */
+const THEMES = {
+  forest:   { bg:'#0b1a0d', b1:'#163a1a', b2:'#0a2210', b3:'#1a4820' },
+  jungle:   { bg:'#0b1a0d', b1:'#163a1a', b2:'#0a2210', b3:'#1a4820' },
+  ocean:    { bg:'#080f1c', b1:'#0b2a4a', b2:'#061630', b3:'#0c2e54' },
+  beach:    { bg:'#0c1826', b1:'#163248', b2:'#0c1e38', b3:'#1a3e5c' },
+  sea:      { bg:'#080f1c', b1:'#0b2a4a', b2:'#061630', b3:'#0c2e54' },
+  snow:     { bg:'#0d1520', b1:'#1c2c40', b2:'#101c2c', b3:'#1c2e44' },
+  mountain: { bg:'#0d1520', b1:'#182636', b2:'#0e1a28', b3:'#182e48' },
+  winter:   { bg:'#0d1520', b1:'#1c2c40', b2:'#101c2c', b3:'#1c2e44' },
+  city:     { bg:'#120d08', b1:'#281808', b2:'#180e06', b3:'#301a0c' },
+  urban:    { bg:'#120d08', b1:'#281808', b2:'#180e06', b3:'#301a0c' },
+  default:  { bg:'#0d1520', b1:'#162436', b2:'#0a1422', b3:'#162c42' },
+};
+function getTheme(t) {
+  if (!t) return THEMES.default;
+  const k = t.toLowerCase();
+  for (const [key, val] of Object.entries(THEMES)) if (k.includes(key)) return val;
+  return THEMES.default;
+}
+function applyTheme(sceneType) {
+  const t = getTheme(sceneType);
+  const bg = document.querySelector('.v2-bg');
+  if (bg) bg.style.background = t.bg;
+  const b1 = document.getElementById('blob-1'); if (b1) b1.style.background = t.b1;
+  const b2 = document.getElementById('blob-2'); if (b2) b2.style.background = t.b2;
+  const b3 = document.getElementById('blob-3'); if (b3) b3.style.background = t.b3;
+}
+
+/* ── Spatial field ── */
+const CX = 200, CY = 200, FR = 180, MAX_D = 8;
+const trails  = {};   // { id: [{svgX,svgY}] }
+const nodeEls = {};   // { id: <g> }
+const TRAIL_LEN = 10;
+let unityPollTimer = null;
+
+function srcXZ(pos) {
+  if (Array.isArray(pos))             return { x: pos[0]||0, z: pos[2]||0 };
+  if (pos && typeof pos==='object')   return { x: pos.x||0,  z: pos.z||0  };
+  return { x:0, z:0 };
+}
+function toSVG(x, z) {
+  const nx = Math.max(-1, Math.min(1, x / MAX_D));
+  const nz = Math.max(-1, Math.min(1, z / MAX_D));
+  return { svgX: CX + nx * FR, svgY: CY - nz * FR };
+}
+function abbr(id) { return (id||'?').replace(/[^a-zA-Z0-9]/g,'').slice(0,3).toUpperCase(); }
+
+function clamp01(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+function volumeRadius(volume) {
+  return 7 + Math.sqrt(clamp01(volume)) * 25;
+}
+function setSourceVisual(g, isActive, volume) {
+  const r = volumeRadius(volume);
+  const halo = g.querySelector('.src-halo');
+  if (halo) {
+    halo.setAttribute('r', (r * 1.65).toFixed(2));
+    halo.style.opacity = isActive ? String(0.35 + clamp01(volume) * 0.65) : '0.12';
+  }
+  const c = g.querySelector('.src-circle');
+  if (c) {
+    c.setAttribute('r', r.toFixed(2));
+    c.classList.toggle('active', isActive);
+    c.setAttribute('filter', isActive ? 'url(#glow)' : '');
+  }
+}
+function normalizeUnityCommands(commands) {
+  return (commands || [])
+    .filter(c => c && c.action !== 'delete' && c.id)
+    .map(c => ({
+      id: c.id,
+      clip: c.clip,
+      position: c.position,
+      volume: c.volume ?? 0,
+      isActive: true,
+      motion: c.motion,
+    }));
+}
+function freshUnityRuntime(runtime) {
+  if (!runtime?.sources?.length) return null;
+  if (runtime.received_at == null) return runtime;
+  const ageSec = Date.now() / 1000 - Number(runtime.received_at);
+  return Number.isFinite(ageSec) && ageSec < 3 ? runtime : null;
+}
+function renderableSources(scene, unityRuntime, unityCommands) {
+  const runtimeSources = freshUnityRuntime(unityRuntime)?.sources;
+  if (Array.isArray(runtimeSources) && runtimeSources.length) {
+    return runtimeSources.map(s => ({
+      id: s.id || s.clip || '?',
+      position: s.position,
+      volume: s.volume ?? 0,
+      isActive: !!s.isPlaying && clamp01(s.volume) > 0.005,
+      motion: s.motion,
+    }));
+  }
+
+  const commandSources = normalizeUnityCommands(unityCommands);
+  if (commandSources.length) return commandSources;
+
+  const active = scene?.world_state?.active_sources || [];
+  return (scene?.sources || []).map(src => {
+    const id = src.source_id || src.asset_id || String(src);
+    return {
+      id,
+      position: src.position,
+      volume: src.volume ?? 0.5,
+      isActive: active.includes(id),
+      motion: src.motion,
+    };
+  });
+}
+
+function mkSourceNode(id, sx, sy, isActive, volume) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.dataset.id = id;
+  g.setAttribute('transform', `translate(${sx},${sy})`);
+  g.style.transition = 'transform 0.16s linear';
+
+  const halo = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  halo.setAttribute('class','src-halo');
+  halo.setAttribute('filter','url(#sglow)');
+  g.appendChild(halo);
+
+  const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  c.setAttribute('class', isActive ? 'src-circle active' : 'src-circle');
+  g.appendChild(c);
+
+  const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+  txt.setAttribute('class','src-txt'); txt.setAttribute('y','0.35');
+  txt.textContent = abbr(id); g.appendChild(txt);
+  setSourceVisual(g, isActive, volume);
+  return g;
+}
+
+function renderField(scene, unityRuntime = V2.unityRuntime, unityCommands = V2.unityCommands) {
+  const nodesG  = document.getElementById('src-nodes');
+  const trailsG = document.getElementById('src-trails');
+  const msgEl   = document.getElementById('field-msg');
+  if (!nodesG || !trailsG) return;
+
+  const sources = renderableSources(scene, unityRuntime, unityCommands);
+  if (!sources.length) {
+    nodesG.innerHTML = ''; trailsG.innerHTML = '';
+    if (msgEl) msgEl.style.display = '';
+    return;
+  }
+  if (msgEl) msgEl.style.display = 'none';
+
+  const seen   = new Set();
+
+  sources.forEach(src => {
+    const id = src.id || String(src);
+    seen.add(id);
+    const { x, z } = srcXZ(src.position);
+    const { svgX, svgY } = toSVG(x, z);
+    const isActive = !!src.isActive;
+    const volume = clamp01(src.volume);
+
+    // Update trail
+    if (!trails[id]) trails[id] = [];
+    const tr = trails[id];
+    const last = tr[tr.length - 1];
+    if (!last || Math.abs(last.svgX - svgX) > 0.5 || Math.abs(last.svgY - svgY) > 0.5) {
+      tr.push({ svgX, svgY });
+      if (tr.length > TRAIL_LEN) tr.shift();
+    }
+
+    if (nodeEls[id]) {
+      // Move existing node
+      nodeEls[id].setAttribute('transform', `translate(${svgX},${svgY})`);
+      setSourceVisual(nodeEls[id], isActive, volume);
+    } else {
+      const g = mkSourceNode(id, svgX, svgY, isActive, volume);
+      nodesG.appendChild(g);
+      nodeEls[id] = g;
+    }
+  });
+
+  // Remove stale nodes
+  Object.keys(nodeEls).forEach(id => {
+    if (!seen.has(id)) { nodeEls[id].remove(); delete nodeEls[id]; delete trails[id]; }
+  });
+
+  // Redraw trails
+  trailsG.innerHTML = '';
+  Object.entries(trails).forEach(([id, pts]) => {
+    if (pts.length < 2) return;
+    let d = `M ${pts[0].svgX} ${pts[0].svgY}`;
+    pts.slice(1).forEach(p => { d += ` L ${p.svgX} ${p.svgY}`; });
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d', d); path.setAttribute('class','src-trail');
+    trailsG.appendChild(path);
+  });
+}
+
+/* ── EEG state card ── */
+function fmtDelta(cur, prev) {
+  if (cur == null || prev == null) return '';
+  const d = cur - prev;
+  if (Math.abs(d) < 0.015) return '<span class="d-flat">  —</span>';
+  if (d > 0) return `<span class="d-up"> ↑${d.toFixed(2)}</span>`;
+  return `<span class="d-dn"> ↓${Math.abs(d).toFixed(2)}</span>`;
+}
+function renderState(payload) {
+  const el = document.getElementById('v2-state-grid');
+  if (!el || !payload) return;
+  const cur  = payload.current_features  || {};
+  const prev = payload.previous_features || {};
+  const cs   = payload.current_rule_state || '–';
+  const ps   = payload.previous_state?.rule_state || '–';
+  const ab   = cur.alpha_beta_ratio,  pab  = prev.alpha_beta_ratio;
+  const st   = cur.stability_score,   pst  = prev.stability_score;
+  const th   = cur.theta_power || cur.theta, pth = prev.theta_power || prev.theta;
+
+  el.innerHTML = `
+    <div class="state-col">
+      <div class="state-col-hd">Previous</div>
+      <div class="state-badge">${ps}</div>
+      <div class="mrow"><span class="mk">α/β</span><span class="mv">${pab != null ? pab.toFixed(2) : '–'}</span></div>
+      <div class="mrow"><span class="mk">stability</span><span class="mv">${pst != null ? pst.toFixed(2) : '–'}</span></div>
+      ${pth != null ? `<div class="mrow"><span class="mk">θ power</span><span class="mv">${pth.toFixed(2)}</span></div>` : ''}
+    </div>
+    <div class="state-col">
+      <div class="state-col-hd">Current</div>
+      <div class="state-badge">${cs}</div>
+      <div class="mrow"><span class="mk">α/β</span><span class="mv">${ab != null ? ab.toFixed(2) : '–'}${fmtDelta(ab,pab)}</span></div>
+      <div class="mrow"><span class="mk">stability</span><span class="mv">${st != null ? st.toFixed(2) : '–'}${fmtDelta(st,pst)}</span></div>
+      ${th != null ? `<div class="mrow"><span class="mk">θ power</span><span class="mv">${th.toFixed(2)}${fmtDelta(th,pth)}</span></div>` : ''}
+    </div>`;
+
+  if (ab != null) eegAB  = ab;
+  if (st != null) eegST  = st;
+  if (th != null) eegTH  = Math.min(1, th);
+}
+
+/* ── EEG waveform (simulated) ── */
+const N = 460;
+const aBuf = new Float32Array(N), bBuf = new Float32Array(N), tBuf = new Float32Array(N);
+let eegPos = 0, eegPh = 0;
+let eegAB = (V2.payload?.current_features?.alpha_beta_ratio) || 1.0;
+let eegST = (V2.payload?.current_features?.stability_score)  || 0.5;
+let eegTH = 0.3;
+
+function tickWave() {
+  const aAmp = Math.min(0.88, Math.max(0.1, eegAB * 0.32));
+  const bAmp = Math.max(0.08, 0.55 - aAmp);
+  const tAmp = eegST * 0.22;
+  const noise = () => (Math.random() - 0.5) * 0.06;
+
+  aBuf[eegPos % N] = aAmp * Math.sin(2*Math.PI * 0.068 * eegPh) + noise();
+  bBuf[eegPos % N] = bAmp * Math.sin(2*Math.PI * 0.148 * eegPh + 0.7) + noise();
+  tBuf[eegPos % N] = tAmp * Math.sin(2*Math.PI * 0.041 * eegPh + 1.4) + noise();
+  eegPos++; eegPh++;
+  drawWave();
+  requestAnimationFrame(tickWave);
+}
+function drawWave() {
+  const cv = document.getElementById('v2-eeg-cv');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, mid = H/2, sc = H*0.4;
+  ctx.clearRect(0,0,W,H);
+  [[tBuf,'rgba(167,139,250,0.45)'],[bBuf,'rgba(56,189,248,0.52)'],[aBuf,'rgba(52,211,153,0.62)']].forEach(([buf, col]) => {
+    ctx.strokeStyle = col; ctx.lineWidth = 1.3; ctx.beginPath();
+    for (let i=0; i<N; i++) {
+      const v = buf[(eegPos+i)%N];
+      const x = (i/N)*W, y = mid + v*sc;
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  });
+}
+
+/* ── Adaptation log ── */
+function renderLog(hist) {
+  const el = document.getElementById('v2-log');
+  if (!el) return;
+  if (!hist?.length) { el.innerHTML='<div class="log-entry">Steps will appear here.</div>'; return; }
+  el.innerHTML = [...hist].reverse().map(h=>`
+    <div class="log-entry">
+      <span class="log-win">W${h.window_id||'?'}</span>
+      <span class="log-st"> ${h.rule_state||''} → ${h.llm_state||'…'}</span>
+      ${h.trend ? `<span style="color:rgba(255,255,255,0.22)"> · ${h.trend}</span>` : ''}
+      ${h.confidence != null ? `<span style="color:rgba(255,255,255,0.18)"> ${h.confidence.toFixed(2)}</span>` : ''}
+    </div>`).join('');
+}
+
+/* ── Full UI update ── */
+function applyState(data) {
+  if (data.scene) {
+    V2.scene = data.scene;
+    applyTheme(data.scene.scene_type);
+    const t = document.getElementById('v2-scene-type'); if (t) t.textContent = data.scene.scene_type || '–';
+    const a = document.getElementById('v2-atm');        if (a) a.textContent = data.scene.atmosphere || '';
+    const n = document.getElementById('v2-narr');       if (n) n.textContent = data.scene.narration_script || '';
+  }
+  if (Array.isArray(data.unity_commands)) V2.unityCommands = data.unity_commands;
+  if (data.unity_runtime !== undefined) V2.unityRuntime = data.unity_runtime;
+  if (data.scene || data.unity_runtime !== undefined || Array.isArray(data.unity_commands)) {
+    renderField(V2.scene, V2.unityRuntime, V2.unityCommands);
+  }
+  if (typeof V3NS !== 'undefined' && V3NS.refreshScene) V3NS.refreshScene();
+  if (data.current_payload) { V2.payload = data.current_payload; renderState(data.current_payload); }
+  if (data.mental_history)  { V2.history = data.mental_history;   renderLog(data.mental_history); }
+  if (data.current_idx  != null) V2.idx   = data.current_idx;
+  if (data.total_windows != null) V2.total = data.total_windows;
+
+  const wc = document.getElementById('v2-win-count');
+  if (wc) wc.textContent = `Window ${V2.idx >= 0 ? V2.idx+1 : 0} / ${V2.total}`;
+  const pb = document.getElementById('v2-prev');
+  if (pb) pb.disabled = V2.idx <= 0;
+}
+
+/* ── AJAX step ── */
+async function v2Step(dir) {
+  try {
+    const r = await fetch('/api/step', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({direction: dir})
+    });
+    const d = await r.json();
+    if (d.error && !d.scene) { console.warn('step:', d.error); return; }
+    applyState(d);
+    if (d.done) stopAuto();
+  } catch(e) { console.error(e); }
+}
+
+/* ── Auto-advance ── */
+let autoTimer = null, autoDelay = 10000, progRAF = null, progT0 = 0;
+
+function toggleAuto() {
+  autoTimer ? stopAuto() : startAuto();
+}
+function startAuto() {
+  const btn = document.getElementById('v2-auto');
+  if (btn) { btn.textContent='Auto ◼'; btn.classList.add('auto-on'); }
+  progT0 = Date.now(); tickProg();
+  autoTimer = setInterval(() => { v2Step('next'); progT0 = Date.now(); }, autoDelay);
+}
+function stopAuto() {
+  clearInterval(autoTimer); autoTimer = null;
+  if (progRAF) cancelAnimationFrame(progRAF);
+  const btn = document.getElementById('v2-auto');
+  if (btn) { btn.textContent='Auto ▷'; btn.classList.remove('auto-on'); }
+  const bar = document.getElementById('v2-prog');
+  if (bar) bar.style.width = '0%';
+}
+function tickProg() {
+  if (!autoTimer) return;
+  const bar = document.getElementById('v2-prog');
+  if (bar) bar.style.width = Math.min(100, (Date.now()-progT0)/autoDelay*100) + '%';
+  progRAF = requestAnimationFrame(tickProg);
+}
+function setSpeed(ms) {
+  autoDelay = ms;
+  document.querySelectorAll('.spd-btn').forEach(b => b.classList.toggle('on', parseInt(b.dataset.s)===ms));
+  if (autoTimer) { stopAuto(); startAuto(); }
+}
+
+/* ── Realtime polling (V2) ── */
+function startRTMonitor() {
+  const badge = document.getElementById('v2-live-badge');
+  if (badge) badge.style.display = 'block';
+  async function poll() {
+    try {
+      const r = await fetch('/realtime_status');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.active) return;
+      applyState({ scene: d.scene, current_payload: d.current_payload });
+    } catch(e){}
+  }
+  poll(); setInterval(poll, 3000);
+}
+
+/* ── Unity runtime sync (V2) ── */
+function startUnitySync() {
+  if (unityPollTimer) return;
+
+  async function pollUnity() {
+    try {
+      const r = await fetch('/api/unity_state', { cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      applyState({
+        scene: d.scene,
+        unity_commands: d.unity_commands || [],
+        unity_runtime: d.unity_runtime || null,
+      });
+    } catch(e) {}
+  }
+
+  pollUnity();
+  unityPollTimer = setInterval(pollUnity, 220);
+}
+</script>

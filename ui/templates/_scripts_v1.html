@@ -1,0 +1,68 @@
+<script>
+/* ══════════════════════════════════════════════════════
+   V1: original realtime monitor (unchanged logic)
+   ══════════════════════════════════════════════════════ */
+const v1RealtimeActive = {{ 'true' if realtime_active else 'false' }};
+if (v1RealtimeActive) {
+  (function startV1RT() {
+    const statusEl  = document.getElementById('realtime-status');
+    const summaryEl = document.getElementById('realtime-summary');
+    const canvas    = document.getElementById('eeg-plot');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    async function refresh() {
+      try {
+        const res = await fetch('/realtime_status');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (!data.active) {
+          if (statusEl) statusEl.textContent = 'Realtime session is not active.';
+          drawEmpty(ctx, canvas); if (summaryEl) summaryEl.textContent = ''; return;
+        }
+        if (statusEl) statusEl.textContent = `Realtime active · ${data.plot_points.length} points · pending ${data.pending_window_count}`;
+        drawRT(ctx, canvas, data.plot_points);
+        if (data.summary && summaryEl) summaryEl.innerHTML = `<div style="font-weight:600;margin-bottom:6px">Latest 30s summary</div><div>State: <strong>${data.summary.state_label}</strong> · Trend: <strong>${data.summary.trend}</strong> · Confidence: <strong>${(data.summary.confidence||0).toFixed(2)}</strong></div><div style="margin-top:6px">Interpretation: ${data.summary.interpretation}</div>`;
+        else if (summaryEl) summaryEl.textContent = 'Waiting for first 30s realtime summary...';
+        if (data.scene) {
+          const e = document.getElementById('scene-type'); if(e) e.textContent=data.scene.scene_type||'N/A';
+          const f = document.getElementById('scene-atmosphere'); if(f) f.textContent=data.scene.atmosphere||'N/A';
+          const g = document.getElementById('scene-narration'); if(g) g.textContent=data.scene.narration_script||'N/A';
+          const h = document.getElementById('scene-json'); if(h) h.textContent=JSON.stringify(data.scene,null,2);
+        }
+        if (data.current_payload) {
+          const a = document.getElementById('eeg-window-id'); if(a) a.textContent=data.current_payload.window_id||'N/A';
+          const b = document.getElementById('eeg-rule-state'); if(b) b.textContent=data.current_payload.current_rule_state||'N/A';
+          const c = document.getElementById('eeg-key-ratios'); const ab=data.current_payload.current_features?.alpha_beta_ratio; if(c) c.textContent=ab!=null?`α/β: ${ab.toFixed(2)}`:'α/β: –';
+          const d = document.getElementById('eeg-payload'); if(d) d.textContent=JSON.stringify(data.current_payload,null,2);
+        }
+      } catch(e){ if(statusEl) statusEl.textContent='Realtime fetch error.'; }
+    }
+    refresh(); setInterval(refresh,3000);
+  })();
+}
+function drawEmpty(ctx,canvas) {
+  ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#0b1221'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#64748b'; ctx.font='14px Arial'; ctx.fillText('Waiting for realtime EEG signal...',20,30);
+}
+function drawRT(ctx,canvas,points) {
+  ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#0b1221'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  if (!points?.length) { drawEmpty(ctx,canvas); return; }
+  const vp = points.filter(p=>p.alpha_beta_ratio!=null&&p.stability_score!=null);
+  if (!vp.length) { drawEmpty(ctx,canvas); return; }
+  const times=vp.map(p=>p.time||0), ab=vp.map(p=>p.alpha_beta_ratio), st=vp.map(p=>p.stability_score);
+  const tMin=Math.min(...times),tMax=Math.max(...times),yMin=Math.min(...ab,...st),yMax=Math.max(...ab,...st);
+  const pad=40,W=canvas.width-pad*2,H=canvas.height-pad*2;
+  ctx.strokeStyle='#334155'; ctx.lineWidth=1; ctx.beginPath();
+  for(let i=0;i<=4;i++){const y=pad+(H/4)*i; ctx.moveTo(pad,y); ctx.lineTo(canvas.width-pad,y);} ctx.stroke();
+  const mX=t=>pad+((t-tMin)/(tMax-tMin||1))*W, mY=v=>pad+H-((v-yMin)/(yMax-yMin||1))*H;
+  [[ab,'#10b981'],[st,'#38bdf8']].forEach(([vals,col])=>{
+    ctx.strokeStyle=col; ctx.lineWidth=2; ctx.beginPath();
+    vp.forEach((p,i)=>{ const x=mX(p.time||0),y=mY(vals[i]); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }); ctx.stroke();
+  });
+  ctx.fillStyle='#f8fafc'; ctx.font='12px Arial'; ctx.fillText('α/β ratio',pad+8,pad+14); ctx.fillText('stability',pad+8,pad+28);
+  ctx.fillStyle='#10b981'; ctx.fillRect(pad+80,pad+4,10,10); ctx.fillStyle='#38bdf8'; ctx.fillRect(pad+80,pad+18,10,10);
+  ctx.font='11px Arial'; ctx.fillStyle='#94a3b8';
+  ctx.fillText(`t=${Math.round(tMin)}s`,pad,canvas.height-pad+15);
+  ctx.fillText(`t=${Math.round(tMax)}s`,canvas.width-pad-40,canvas.height-pad+15);
+}
+</script>

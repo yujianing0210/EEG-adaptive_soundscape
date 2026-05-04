@@ -1,0 +1,178 @@
+<!-- ══════════════════════════════════════════════
+     V2  —  dreamcore interface
+     ══════════════════════════════════════════════ -->
+<div id="v2" class="tab-pane">
+  <!-- Background blobs -->
+  <div class="v2-bg">
+    <div class="blob blob-1" id="blob-1"></div>
+    <div class="blob blob-2" id="blob-2"></div>
+    <div class="blob blob-3" id="blob-3"></div>
+  </div>
+
+  <div class="v2-content">
+    <!-- Header bar -->
+    <div class="v2-header glass">
+      <div class="v2-header-top">
+        <div>
+          <div class="v2-title">EEG · Adaptive Spatial Audio</div>
+          <div class="v2-subtitle">{{ eeg_path }}</div>
+        </div>
+        <div class="v2-live-badge" id="v2-live-badge">● Live</div>
+      </div>
+
+      <!-- Bootstrap form -->
+      <form action="/bootstrap" method="post" class="v2-form-row">
+        <input class="v2-input" type="text" name="prompt"
+               placeholder="Describe your scene…  e.g. misty forest at dawn"
+               value="{{ prompt or '' }}" />
+        <label class="v2-mode"><input type="radio" name="eeg_mode" value="recorded" {% if eeg_mode != 'realtime' %}checked{% endif %}> CSV</label>
+        <label class="v2-mode"><input type="radio" name="eeg_mode" value="realtime" {% if eeg_mode == 'realtime' %}checked{% endif %}> Live</label>
+        <button class="vbtn primary" type="submit">Generate</button>
+      </form>
+
+      <!-- Window nav -->
+      <div class="v2-ctrl-row">
+        <button class="vbtn" id="v2-prev" onclick="v2Step('previous')" {% if current_idx <= 0 %}disabled{% endif %}>← Prev</button>
+        <button class="vbtn" id="v2-next" onclick="v2Step('next')">Next →</button>
+        <button class="vbtn" id="v2-auto" onclick="toggleAuto()">Auto ▷</button>
+        {% if realtime_active %}
+        <form action="/stop_realtime" method="post" style="display:inline">
+          <button class="vbtn danger" type="submit">Stop Live</button>
+        </form>
+        {% endif %}
+        <span class="v2-win-count" id="v2-win-count">
+          Window {{ current_idx+1 if current_idx>=0 else 0 }} / {{ total_windows }}
+        </span>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="v2-main">
+
+      <!-- LEFT: spatial audio field -->
+      <div class="spatial-card glass">
+        <svg id="spatial-svg" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="3.5" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="sglow" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="9" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <radialGradient id="fg" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="rgba(255,255,255,0.045)"/>
+              <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+            </radialGradient>
+          </defs>
+          <!-- Field ambient glow -->
+          <circle cx="200" cy="200" r="188" fill="url(#fg)"/>
+          <!-- Rings -->
+          <circle cx="200" cy="200" r="62"  class="svg-ring ring-inner"/>
+          <circle cx="200" cy="200" r="122" class="svg-ring ring-mid"/>
+          <circle cx="200" cy="200" r="182" class="svg-ring ring-outer"/>
+          <!-- Ring labels -->
+          <text x="200" y="145" class="ring-lbl" text-anchor="middle">AMBIENT</text>
+          <text x="200" y="267" class="ring-lbl" text-anchor="middle">NEAR</text>
+          <!-- Compass ticks -->
+          <line x1="200" y1="14"  x2="200" y2="22"  stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+          <line x1="200" y1="378" x2="200" y2="386" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+          <line x1="14"  y1="200" x2="22"  y2="200" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+          <line x1="378" y1="200" x2="386" y2="200" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+          <!-- Crosshair at center -->
+          <line x1="194" y1="200" x2="206" y2="200" stroke="rgba(255,255,255,0.25)" stroke-width="0.8"/>
+          <line x1="200" y1="194" x2="200" y2="206" stroke="rgba(255,255,255,0.25)" stroke-width="0.8"/>
+          <!-- Trails & nodes (JS) -->
+          <g id="src-trails"></g>
+          <g id="src-nodes"></g>
+          <!-- Listener -->
+          <circle cx="200" cy="200" r="14" class="listener-ring"/>
+          <circle cx="200" cy="200" r="5"  class="listener-dot" filter="url(#glow)"/>
+          <!-- Empty state message (hidden when sources present) -->
+          <text id="field-msg" x="200" y="215" class="field-empty">BOOTSTRAP TO BEGIN</text>
+        </svg>
+
+        <!-- Scene info -->
+        <div class="scene-strip">
+          <div class="scene-type-badge" id="v2-scene-type">{{ scene.scene_type if scene else '–' }}</div>
+          <div class="scene-atm"  id="v2-atm">{{ scene.atmosphere if scene else 'Generate a scene to begin.' }}</div>
+          <div class="scene-narr" id="v2-narr">{{ scene.narration_script if scene else '' }}</div>
+        </div>
+      </div>
+
+      <!-- RIGHT: EEG + controls -->
+      <div class="v2-right">
+
+        <!-- Brain state comparison -->
+        <div class="eeg-state-card glass">
+          <div class="card-lbl">Brain State · EEG Analysis</div>
+          <div class="state-grid" id="v2-state-grid">
+            {% if current_payload %}
+              {% set cur  = current_payload.get('current_features', {}) %}
+              {% set prev = current_payload.get('previous_features') or {} %}
+              {% set ps   = current_payload.get('previous_state') or {} %}
+              <div class="state-col">
+                <div class="state-col-hd">Previous</div>
+                <div class="state-badge">{{ ps.get('rule_state', '–') }}</div>
+                <div class="mrow"><span class="mk">α/β</span><span class="mv">{{ '%.2f'|format(prev.alpha_beta_ratio) if prev.alpha_beta_ratio else '–' }}</span></div>
+                <div class="mrow"><span class="mk">stability</span><span class="mv">{{ '%.2f'|format(prev.stability_score) if prev.stability_score else '–' }}</span></div>
+              </div>
+              <div class="state-col">
+                <div class="state-col-hd">Current</div>
+                <div class="state-badge">{{ current_payload.current_rule_state or '–' }}</div>
+                <div class="mrow"><span class="mk">α/β</span><span class="mv">{{ '%.2f'|format(cur.alpha_beta_ratio) if cur.alpha_beta_ratio else '–' }}</span></div>
+                <div class="mrow"><span class="mk">stability</span><span class="mv">{{ '%.2f'|format(cur.stability_score) if cur.stability_score else '–' }}</span></div>
+              </div>
+            {% else %}
+              <div style="grid-column:1/span 2;color:rgba(255,255,255,0.2);font-size:11px;text-align:center;padding:14px 0;">Bootstrap to begin analysis.</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <!-- EEG waveform -->
+        <div class="eeg-wave-card glass">
+          <div class="card-lbl">EEG Signal · {{ 'Live OSC' if realtime_active else 'CSV Playback' }}</div>
+          <canvas id="v2-eeg-cv" width="460" height="76"></canvas>
+          <div class="wave-legend">
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(52,211,153,0.75)"></div>α alpha</div>
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(56,189,248,0.75)"></div>β beta</div>
+            <div class="wl-item"><div class="wl-dot" style="background:rgba(167,139,250,0.75)"></div>θ theta</div>
+          </div>
+        </div>
+
+        <!-- Auto-advance controls -->
+        <div class="ctrl-card glass">
+          <div class="card-lbl">Window Advance</div>
+          <div class="speed-row">
+            <span class="speed-lbl">Interval</span>
+            <button class="spd-btn" onclick="setSpeed(5000)"  data-s="5000">5 s</button>
+            <button class="spd-btn on" onclick="setSpeed(10000)" data-s="10000">10 s</button>
+            <button class="spd-btn" onclick="setSpeed(30000)" data-s="30000">30 s</button>
+            <button class="spd-btn" onclick="setSpeed(60000)" data-s="60000">60 s</button>
+          </div>
+          <div class="prog-wrap"><div class="prog-bar" id="v2-prog"></div></div>
+        </div>
+
+        <!-- Adaptation log -->
+        <div class="log-card glass">
+          <div class="card-lbl">Adaptation Log</div>
+          <div id="v2-log">
+            {% if mental_history %}
+              {% for item in mental_history | reverse %}
+              <div class="log-entry">
+                <span class="log-win">W{{ item.window_id }}</span>
+                <span class="log-st"> {{ item.rule_state or '' }} → {{ item.llm_state or '…' }}</span>
+                {% if item.trend %}<span style="color:rgba(255,255,255,0.22)"> · {{ item.trend }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            {% else %}
+              <div class="log-entry">Steps will appear here.</div>
+            {% endif %}
+          </div>
+        </div>
+
+      </div><!-- .v2-right -->
+    </div><!-- .v2-main -->
+  </div><!-- .v2-content -->
+</div><!-- #v2 -->
