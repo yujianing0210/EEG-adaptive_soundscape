@@ -63,34 +63,441 @@ def select_scene_family(user_prompt: str) -> str:
     return "forest"
 
 
-def choose_sources(library: List[Dict[str, Any]], scene_family: str, density: float) -> List[Dict[str, Any]]:
+def _canonical_scene_family(scene_family: Any) -> str:
+    sf = str(scene_family or "").strip().lower()
+    if sf in {"ocean", "ocean_beach", "beach", "sea", "coast", "seaside", "shore"}:
+        return "ocean"
+    if sf in {"night_forest", "nightforest", "forest_night"}:
+        return "night_forest"
+    if sf in {"forest", "woods", "woodland"}:
+        return "forest"
+    if "ocean" in sf or "beach" in sf or "sea" in sf:
+        return "ocean"
+    if "night" in sf and "forest" in sf:
+        return "night_forest"
+    if "forest" in sf or "woods" in sf:
+        return "forest"
+    return "forest"
+
+
+def _as_lower_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip().lower() for v in value if str(v).strip()]
+    text = str(value).strip()
+    return [text.lower()] if text else []
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp01(value: Any, default: float = 0.5) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, v))
+
+
+def _asset_layer(asset: Dict[str, Any]) -> str:
+    layer = str(
+        asset.get("layer")
+        or asset.get("category")
+        or asset.get("role")
+        or "event"
+    ).lower()
+    if layer not in {"ambient", "event", "action"}:
+        return "event"
+    return layer
+
+
+def _asset_category(asset: Dict[str, Any]) -> str:
+    layer = _asset_layer(asset)
+    if layer in {"ambient", "event", "action"}:
+        return layer
+    return "event"
+
+
+def _matches_scene(asset: Dict[str, Any], scene_family: str) -> bool:
+    scene_family = _canonical_scene_family(scene_family)
+    scene_values = set(_as_lower_list(asset.get("scene")))
+    tags = set(_as_lower_list(asset.get("tags")))
+
+    if scene_family in {"forest", "night_forest"}:
+        return ("forest" in scene_values) or ("forest" in tags)
+    if scene_family == "ocean":
+        return ("ocean_beach" in scene_values) or ("ocean" in tags) or ("beach" in tags)
+
     aliases = SCENE_TAG_ALIASES.get(scene_family, {scene_family})
+    searchable = " ".join([
+        str(asset.get("asset_id", "")),
+        str(asset.get("label", "")),
+        str(asset.get("description", "")),
+        str(asset.get("asset_ref", "")),
+        " ".join(_as_lower_list(asset.get("tags"))),
+        " ".join(_as_lower_list(asset.get("scene"))),
+    ]).lower()
+    return any(alias in searchable for alias in aliases)
 
-    def searchable_text(asset: Dict[str, Any]) -> str:
-        values = [
-            asset.get("asset_id", ""),
-            asset.get("label", ""),
-            asset.get("description", ""),
-            asset.get("asset_ref", ""),
-            " ".join(asset.get("tags", [])),
+
+def _segment_index(scene: Optional[Dict[str, Any]]) -> int:
+    if not scene:
+        return 0
+    sid = str(scene.get("segment_id", "segment_000"))
+    try:
+        return int(sid.split("_")[-1])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _scene_ambient_priority(scene_family: str) -> List[str]:
+    scene_family = _canonical_scene_family(scene_family)
+    if scene_family in {"forest", "night_forest"}:
+        return ["forest_ambient_bed_01", "forest_wind_leaves_01", "forest_ambient_bed_02"]
+    if scene_family == "ocean":
+        return ["ocean_waves_soft_01", "ocean_shoreline_wash_01", "ocean_sea_breeze_01"]
+    return []
+
+
+def _state_flags(
+    state_label: str,
+    attention: Optional[float],
+    relaxation: Optional[float],
+    anxiety: Optional[float],
+    mind_wandering_risk: Optional[float],
+    stability: Optional[float],
+) -> Dict[str, bool]:
+    anxiety_high = (anxiety is not None and anxiety >= 0.65) or (relaxation is not None and relaxation < 0.45)
+    attention_low = (attention is not None and attention < 0.45) or (mind_wandering_risk is not None and mind_wandering_risk >= 0.6)
+    settling = state_label == "settling"
+    stability_high = stability is not None and stability >= 0.65
+    return {
+        "anxiety_high": anxiety_high,
+        "attention_low": attention_low,
+        "settling": settling,
+        "stability_high": stability_high,
+    }
+
+
+def _asset_allowed_under_state(asset: Dict[str, Any], anxiety_high: bool) -> bool:
+    avoid_when = set(_as_lower_list(asset.get("avoid_when")))
+    suddenness = _safe_float(asset.get("suddenness"), 0.0)
+    if anxiety_high and "anxiety_high" in avoid_when:
+        return False
+    if anxiety_high and suddenness > 0.4:
+        return False
+    return True
+
+
+def _is_bird_like_event(asset: Dict[str, Any]) -> bool:
+    aid = str(asset.get("asset_id", "")).lower()
+    label = str(asset.get("label", "")).lower()
+    tags = set(_as_lower_list(asset.get("tags")))
+    text = " ".join([aid, label, " ".join(tags)])
+    return ("bird" in text) or ("seagull" in text)
+
+
+def choose_sources(
+    library: List[Dict[str, Any]],
+    scene_family: str,
+    density: float,
+    eventfulness: float = 0.3,
+    attention: Optional[float] = None,
+    relaxation: Optional[float] = None,
+    anxiety: Optional[float] = None,
+    state_label: str = "settling",
+    mind_wandering_risk: Optional[float] = None,
+    stability: Optional[float] = None,
+    previous_scene: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    scene_family = _canonical_scene_family(scene_family)
+    candidates = [asset for asset in library if _matches_scene(asset, scene_family)]
+    if not candidates:
+        candidates = list(library)
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {"ambient": [], "event": [], "action": []}
+    for asset in candidates:
+        grouped[_asset_layer(asset)].append(asset)
+
+    flags = _state_flags(state_label, attention, relaxation, anxiety, mind_wandering_risk, stability)
+    seg_idx = _segment_index(previous_scene)
+    ambient_priority = _scene_ambient_priority(scene_family)
+    ambient_rank = {aid: idx for idx, aid in enumerate(ambient_priority)}
+
+    prev_ambient_id = None
+    prev_event_id = None
+    played_event_counts: Dict[str, int] = {}
+    recent_event_ids: List[str] = []
+    last_event_segment = -999
+    last_event_segment_by_id: Dict[str, int] = {}
+    if previous_scene:
+        ws = previous_scene.get("world_state", {}) if isinstance(previous_scene.get("world_state", {}), dict) else {}
+        raw_counts = ws.get("played_event_counts", {})
+        if isinstance(raw_counts, dict):
+            for k, v in raw_counts.items():
+                try:
+                    played_event_counts[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    continue
+        raw_recent = ws.get("recent_event_ids", [])
+        if isinstance(raw_recent, list):
+            recent_event_ids = [str(v) for v in raw_recent if str(v)]
+        try:
+            last_event_segment = int(ws.get("last_event_segment", -999))
+        except (TypeError, ValueError):
+            last_event_segment = -999
+        raw_last_by_id = ws.get("last_event_segment_by_id", {})
+        if isinstance(raw_last_by_id, dict):
+            for k, v in raw_last_by_id.items():
+                try:
+                    last_event_segment_by_id[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    continue
+        for src in previous_scene.get("sources", []):
+            src_layer = str(src.get("layer", src.get("category", ""))).lower()
+            if src_layer == "ambient":
+                prev_ambient_id = src.get("asset_id") or src.get("source_id")
+            elif src_layer == "event":
+                prev_event_id = src.get("asset_id") or src.get("source_id")
+
+    # 1) Exactly one ambient.
+    ambient_candidates = [
+        a for a in grouped["ambient"]
+        if _asset_allowed_under_state(a, flags["anxiety_high"])
+    ]
+    ambient_selected = None
+    allow_ambient_switch = seg_idx > 0 and (seg_idx % 6 == 0)
+    if prev_ambient_id and not allow_ambient_switch:
+        for a in ambient_candidates:
+            if a.get("asset_id") == prev_ambient_id:
+                ambient_selected = a
+                break
+    if ambient_selected is None and ambient_candidates:
+        random.shuffle(ambient_candidates)
+        if allow_ambient_switch and prev_ambient_id:
+            alternatives = [a for a in ambient_candidates if a.get("asset_id") != prev_ambient_id]
+            if alternatives:
+                ambient_candidates = alternatives
+        ambient_candidates.sort(
+            key=lambda a: (
+                -int(bool(a.get("is_primary_ambient"))),
+                ambient_rank.get(str(a.get("asset_id")), 99),
+                -_safe_float(a.get("priority"), 0.5),
+            )
+        )
+        ambient_selected = ambient_candidates[0]
+    if ambient_selected is None and candidates:
+        ambient_selected = candidates[0]
+
+    selected: List[Dict[str, Any]] = []
+    if ambient_selected is not None:
+        selected.append(ambient_selected)
+
+    secondary_ambient = None
+    if ambient_selected is not None and len(ambient_candidates) > 1:
+        ambient_texture_pool = [
+            a for a in ambient_candidates
+            if a.get("asset_id") != ambient_selected.get("asset_id")
+            and (
+                "slow_movement" in set(_as_lower_list(a.get("spatial_behavior")))
+                or "texture" in set(_as_lower_list(a.get("tags")))
+                or density >= 0.55
+            )
         ]
-        return " ".join(values).lower()
+        allow_secondary_ambient = density >= 0.55 or flags["attention_low"] or (seg_idx > 0 and seg_idx % 4 == 0)
+        if allow_secondary_ambient and ambient_texture_pool:
+            ambient_texture_pool.sort(
+                key=lambda a: (
+                    int(a.get("asset_id") == prev_ambient_id),
+                    -_safe_float(a.get("priority"), 0.5),
+                    random.random(),
+                )
+            )
+            secondary_ambient = ambient_texture_pool[0]
+            selected.append(secondary_ambient)
 
-    filtered = [asset for asset in library if any(alias in searchable_text(asset) for alias in aliases)]
-    if not filtered:
-        filtered = [asset for asset in library if asset.get("category") == "ambient"] or library
+    # 2) Event slot (at most one), occasional, and suppress under anxiety/settling.
+    event_selected = None
+    event_candidates = [
+        a for a in grouped["event"]
+        if _asset_allowed_under_state(a, flags["anxiety_high"])
+    ]
+    if flags["anxiety_high"]:
+        event_candidates = [
+            a for a in event_candidates
+            if _safe_float(a.get("suddenness"), 0.0) <= 0.25
+            and str(a.get("recommended_distance", "")).lower() in {"far", "middle", "wide"}
+            and not bool(a.get("is_rare_event"))
+        ]
 
-    # density 0-1 -> pick number of sources
-    num = max(2, min(5, int(2 + density * 3)))
-    ambient = [asset for asset in filtered if asset.get("category") == "ambient"]
-    events = [asset for asset in filtered if asset.get("category") != "ambient"]
-    random.shuffle(ambient)
-    random.shuffle(events)
-    selected = (ambient[:1] + events + ambient[1:])[:min(num, len(filtered))]
-    return selected or filtered[:num]
+    allow_event = False
+    strong_attention_recovery = (
+        (attention is not None and attention < 0.32)
+        or (mind_wandering_risk is not None and mind_wandering_risk >= 0.85)
+    )
+    if flags["attention_low"] and not flags["settling"]:
+        allow_event = True
+    if mind_wandering_risk is not None and mind_wandering_risk >= 0.72 and not flags["anxiety_high"]:
+        allow_event = True
+    # Keep events occasional in normal mode.
+    if allow_event and seg_idx % 2 == 1 and (mind_wandering_risk or 0.0) < 0.8:
+        allow_event = False
+    min_event_gap = 3 if flags["anxiety_high"] else 2
+    if allow_event and (seg_idx - last_event_segment) < min_event_gap and not strong_attention_recovery:
+        allow_event = False
+
+    if allow_event:
+        # Probabilistic gate to avoid "every window always has an event".
+        trigger_prob = 0.30 + 0.45 * _clamp01(eventfulness, 0.3)
+        if flags["attention_low"]:
+            trigger_prob += 0.10
+        if flags["anxiety_high"]:
+            trigger_prob -= 0.20
+        if strong_attention_recovery:
+            trigger_prob += 0.15
+        trigger_prob = max(0.10, min(0.92, trigger_prob))
+        if random.random() > trigger_prob:
+            allow_event = False
+
+    if allow_event and event_candidates:
+        # Prevent immediate reuse of exactly the same event ID when alternatives exist.
+        staged = []
+        for a in event_candidates:
+            aid = str(a.get("asset_id", ""))
+            last_seg_for_id = last_event_segment_by_id.get(aid, -999)
+            if (seg_idx - last_seg_for_id) >= 3:
+                staged.append(a)
+        if staged:
+            event_candidates = staged
+
+        unplayed = [a for a in event_candidates if played_event_counts.get(str(a.get("asset_id")), 0) == 0]
+        if unplayed:
+            event_candidates = unplayed
+        unplayed_exists = len(unplayed) > 0
+        if event_candidates:
+            min_play_count = min(played_event_counts.get(str(a.get("asset_id")), 0) for a in event_candidates)
+        else:
+            min_play_count = 0
+        scored = []
+        for a in event_candidates:
+            aid = str(a.get("asset_id", ""))
+            use_when = set(_as_lower_list(a.get("use_when")))
+            distance = str(a.get("recommended_distance", "")).lower()
+            suddenness = _safe_float(a.get("suddenness"), 0.0)
+            score = 0.0
+            if "attention_low" in use_when:
+                score += 3.5
+            if distance in {"far", "middle", "wide"}:
+                score += 1.5
+            score += _safe_float(a.get("priority"), 0.5)
+            score -= suddenness * 2.0
+            if bool(a.get("is_rare_event")):
+                if flags["stability_high"] and not flags["settling"] and not flags["anxiety_high"]:
+                    score += 0.2
+                else:
+                    score -= 3.0
+            times_played = played_event_counts.get(aid, 0)
+            score -= min(3.0, times_played * 0.9)
+            # Strongly discourage replaying the same event every window.
+            if times_played >= 1:
+                score -= 0.8
+            if times_played >= 2:
+                score -= 1.4
+            if unplayed_exists and times_played > 0:
+                score -= 1.2
+            score -= max(0, times_played - min_play_count) * 1.5
+            if prev_event_id and (a.get("asset_id") == prev_event_id):
+                # Avoid selecting the exact same event every update when alternatives exist.
+                score -= 2.8
+            if aid in recent_event_ids:
+                score -= 1.8
+            scored.append((score, random.random(), a))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        if scored and scored[0][0] > -2.0:
+            best_score = scored[0][0]
+            # Randomize among near-top candidates to avoid repetitive single-event selection.
+            top_pool = [row[2] for row in scored if row[0] >= best_score - 0.9]
+            if prev_event_id:
+                non_repeat_pool = [a for a in top_pool if a.get("asset_id") != prev_event_id]
+                if non_repeat_pool:
+                    top_pool = non_repeat_pool
+            event_selected = random.choice(top_pool) if top_pool else scored[0][2]
+            # If only a previously played single candidate remains, prefer silence over repetition.
+            if not strong_attention_recovery and event_selected is not None:
+                eid = str(event_selected.get("asset_id", ""))
+                if played_event_counts.get(eid, 0) >= 2 and len(event_candidates) == 1:
+                    event_selected = None
+
+    # 3) Action slot (at most one). Action can coexist with event.
+    action_selected = None
+    action_candidates = [
+        a for a in grouped["action"]
+        if _asset_allowed_under_state(a, flags["anxiety_high"])
+    ]
+    if action_candidates:
+        previous_action_ids = []
+        if previous_scene:
+            previous_action_ids = [
+                str(src.get("asset_id") or src.get("source_id") or "")
+                for src in previous_scene.get("sources", [])
+                if str(src.get("layer", src.get("category", ""))).lower() == "action"
+            ]
+        if flags["anxiety_high"] or flags["settling"]:
+            for a in action_candidates:
+                if str(a.get("asset_id", "")).lower() == "body_slow_breath_01":
+                    action_selected = a
+                    break
+        if action_selected is None:
+            scene_action_ids = {
+                "forest": "forest_grass_footstep_01",
+                "night_forest": "forest_grass_footstep_01",
+                "ocean": "ocean_wet_sand_footstep_01",
+            }
+            preferred_action_id = scene_action_ids.get(scene_family, "body_slow_breath_01")
+            if flags["attention_low"] and seg_idx % 2 == 0:
+                for a in action_candidates:
+                    if str(a.get("asset_id", "")).lower() == preferred_action_id:
+                        action_selected = a
+                        break
+            if action_selected is None and seg_idx % 3 == 0:
+                for a in action_candidates:
+                    if str(a.get("asset_id", "")).lower() == preferred_action_id:
+                        action_selected = a
+                        break
+            if action_selected is not None and str(action_selected.get("asset_id", "")) in previous_action_ids:
+                alternatives = [
+                    a for a in action_candidates
+                    if str(a.get("asset_id", "")) not in previous_action_ids
+                    and str(a.get("asset_id", "")).lower() != "body_slow_breath_01"
+                ]
+                if alternatives and (flags["attention_low"] or seg_idx % 4 == 0):
+                    action_selected = random.choice(alternatives)
+        if action_selected is None and event_selected is not None:
+            # If event is present, still allow a gentle grounding layer sometimes.
+            if seg_idx % 2 == 0:
+                for a in action_candidates:
+                    if str(a.get("asset_id", "")).lower() == "body_slow_breath_01":
+                        action_selected = a
+                        break
+        if action_selected is None and action_candidates:
+            # Fallback so action does not disappear for long stretches.
+            action_selected = action_candidates[0]
+
+    if event_selected is not None:
+        selected.append(event_selected)
+    if action_selected is not None:
+        selected.append(action_selected)
+
+    return selected
 
 
 def scene_uses_family_assets(scene: Dict[str, Any], scene_family: str) -> bool:
+    scene_family = _canonical_scene_family(scene_family)
     aliases = SCENE_TAG_ALIASES.get(scene_family, {scene_family})
     sources = scene.get("sources", [])
     if not sources:
@@ -102,7 +509,74 @@ def scene_uses_family_assets(scene: Dict[str, Any], scene_family: str) -> bool:
     return any(alias in source_text for alias in aliases)
 
 
+def _source_position(value: Any, fallback: Dict[str, float]) -> Dict[str, float]:
+    if isinstance(value, list) and len(value) >= 3:
+        return {"x": _safe_float(value[0], fallback["x"]), "y": _safe_float(value[1], fallback["y"]), "z": _safe_float(value[2], fallback["z"])}
+    if isinstance(value, dict):
+        return {
+            "x": _safe_float(value.get("x"), fallback["x"]),
+            "y": _safe_float(value.get("y"), fallback["y"]),
+            "z": _safe_float(value.get("z"), fallback["z"]),
+        }
+    return fallback
+
+
+def _normalize_llm_source(source: Dict[str, Any], asset: Dict[str, Any]) -> Dict[str, Any]:
+    layer = _asset_layer(asset)
+    category = _asset_category(asset)
+    scheduled = place_sources([asset], density=0.4)[0]
+    merged = dict(scheduled)
+
+    merged["source_id"] = asset["asset_id"]
+    merged["id"] = asset["asset_id"]
+    merged["asset_id"] = asset["asset_id"]
+    merged["label"] = asset.get("label", merged.get("label", asset["asset_id"]))
+    merged["layer"] = layer
+    merged["category"] = category
+    merged["asset_ref"] = asset.get("asset_ref") or asset.get("mock_file_path") or merged.get("asset_ref")
+    merged["role"] = asset.get("role", merged.get("role", layer))
+
+    # LLM is allowed to design Unity placement and behavior, while metadata
+    # remains the fallback and safety boundary.
+    if "position" in source:
+        merged["position"] = _source_position(source.get("position"), merged["position"])
+    if "volume" in source:
+        merged["volume"] = round(max(0.0, min(0.85, _safe_float(source.get("volume"), merged["volume"]))), 2)
+    if "loop" in source:
+        merged["loop"] = bool(source.get("loop"))
+    if layer == "ambient":
+        merged["loop"] = True
+    if layer == "event":
+        merged["loop"] = False
+    if "motion" in source:
+        motion = _normalize_motion_for_unity(source.get("motion"), layer, _as_lower_list(asset.get("spatial_behavior")))
+        if layer == "event" and _is_bird_like_event(asset):
+            motion = {
+                "type": "orbit",
+                "speed": float(motion.get("speed", 0.08)) if isinstance(motion, dict) else 0.08,
+                "radius": float(motion.get("radius", 1.6)) if isinstance(motion, dict) else 1.6,
+            }
+        merged["motion"] = motion
+    if "repeat_count" in source:
+        repeat_count = int(_safe_float(source.get("repeat_count"), merged["repeat_count"]))
+        merged["repeat_count"] = max(1, min(8, repeat_count))
+        if layer == "event":
+            merged["repeat_count"] = max(2, min(4, merged["repeat_count"]))
+    if "repeat_interval_sec" in source:
+        merged["repeat_interval_sec"] = max(0.0, min(20.0, _safe_float(source.get("repeat_interval_sec"), merged["repeat_interval_sec"])))
+    if "fade_in_sec" in source:
+        merged["fade_in_sec"] = max(0.0, min(12.0, _safe_float(source.get("fade_in_sec"), merged["fade_in_sec"])))
+    if "fade_out_sec" in source:
+        merged["fade_out_sec"] = max(0.0, min(12.0, _safe_float(source.get("fade_out_sec"), merged["fade_out_sec"])))
+    if "auto_delete_after_sec" in source:
+        value = source.get("auto_delete_after_sec")
+        merged["auto_delete_after_sec"] = None if value is None else max(0.0, min(120.0, _safe_float(value, 0.0)))
+
+    return merged
+
+
 def normalize_scene_assets(scene: Dict[str, Any], library: List[Dict[str, Any]], scene_family: str) -> Optional[Dict[str, Any]]:
+    scene_family = _canonical_scene_family(scene_family)
     library_by_id = {asset.get("asset_id"): asset for asset in library}
     library_by_ref = {asset.get("asset_ref"): asset for asset in library if asset.get("asset_ref")}
     library_by_clip = {
@@ -121,21 +595,27 @@ def normalize_scene_assets(scene: Dict[str, Any], library: List[Dict[str, Any]],
         if asset is None:
             continue
 
-        merged = dict(source)
-        merged["source_id"] = asset["asset_id"]
-        merged["category"] = asset.get("category", merged.get("category", "ambient"))
-        merged["asset_ref"] = asset.get("asset_ref") or asset.get("mock_file_path") or merged.get("asset_ref")
-        merged["volume"] = min(0.85, float(merged.get("volume", asset.get("default_volume", 0.6))) * AUDIO_VOLUME_BOOST)
-        merged["loop"] = bool(merged.get("loop", asset.get("category") == "ambient"))
-        if merged["category"] != "ambient":
-            merged["repeat_count"] = int(merged.get("repeat_count", 2))
-            merged["repeat_interval_sec"] = float(merged.get("repeat_interval_sec", 8.0))
-        merged.setdefault("position", {"x": 0, "y": 0, "z": 2.5})
-        merged.setdefault("motion", {"type": "slow_orbit"} if asset.get("category") != "ambient" else {"type": "none"})
-        merged.setdefault("role", asset.get("description", ""))
-        normalized_sources.append(merged)
+        normalized_sources.append(_normalize_llm_source(source, asset))
 
-    scene["sources"] = normalized_sources
+    ambient_sources = [s for s in normalized_sources if str(s.get("layer", "")).lower() == "ambient"]
+    non_ambient_sources = [s for s in normalized_sources if str(s.get("layer", "")).lower() != "ambient"]
+    if ambient_sources:
+        normalized_sources = ambient_sources[:2] + non_ambient_sources
+    else:
+        ambient_candidates = [
+            asset for asset in library
+            if _asset_layer(asset) == "ambient" and _matches_scene(asset, scene_family)
+        ]
+        ambient_candidates.sort(
+            key=lambda a: (
+                -int(bool(a.get("is_primary_ambient"))),
+                -_safe_float(a.get("priority"), 0.5),
+            )
+        )
+        if ambient_candidates:
+            normalized_sources = [_normalize_llm_source({}, ambient_candidates[0])] + non_ambient_sources
+
+    scene["sources"] = normalized_sources[:5]
     scene["scene_type"] = scene_family
     scene.setdefault("world_state", {})
     scene["world_state"]["active_sources"] = [source["source_id"] for source in normalized_sources]
@@ -147,7 +627,19 @@ def normalize_scene_assets(scene: Dict[str, Any], library: List[Dict[str, Any]],
 
 
 def fallback_bootstrap_scene(user_prompt: str, library: List[Dict[str, Any]], scene_family: str) -> Dict[str, Any]:
-    assets = choose_sources(library, scene_family, density=0.4)
+    scene_family = _canonical_scene_family(scene_family)
+    assets = choose_sources(
+        library,
+        scene_family,
+        density=0.4,
+        eventfulness=0.2,
+        attention=0.6,
+        relaxation=0.6,
+        state_label="settling",
+        mind_wandering_risk=0.3,
+        stability=0.55,
+        previous_scene=None,
+    )
     placed = place_sources(assets, density=0.4)
     scene_id = new_scene_id(scene_family)
     world_state = base_world_state(scene_family, [a["asset_id"] for a in assets])
@@ -165,34 +657,139 @@ def fallback_bootstrap_scene(user_prompt: str, library: List[Dict[str, Any]], sc
     )
 
 
+def _default_position_for_distance(recommended_distance: str) -> Dict[str, float]:
+    d = str(recommended_distance or "").lower()
+    if d == "near":
+        return {"x": 0.0, "y": 0.0, "z": 1.2}
+    if d == "middle":
+        return {"x": 2.5, "y": 0.0, "z": 3.0}
+    if d == "far":
+        return {"x": 3.5, "y": 1.0, "z": 5.5}
+    if d == "wide":
+        return {"x": 0.0, "y": 0.0, "z": 4.5}
+    return {"x": 0.0, "y": 0.0, "z": 2.5}
+
+
+def _normalize_motion_for_unity(motion: Any, layer: str, spatial_behavior: List[str]) -> Dict[str, Any]:
+    # Keep metadata motion as-is whenever it uses known vocabulary.
+    if not isinstance(motion, dict):
+        motion = {}
+    mtype = str(motion.get("type", "")).lower()
+    if mtype == "static":
+        return {"type": "none"}
+    if mtype in {
+        "none",
+        "drift",
+        "overhead_pass",
+        "approach_recede",
+        "local_random",
+        "orbit",
+        "circle",
+        "breathing",
+        "random",
+        "slow_orbit",
+    }:
+        return dict(motion)
+
+    if layer == "ambient":
+        if "slow_movement" in spatial_behavior:
+            return {"type": "drift", "duration": 16.0, "repeat": True}
+        return {"type": "none"}
+    if layer == "action":
+        return {"type": "none"}
+    return {"type": "none"}
+
+
+def _safe_layer_volume(asset: Dict[str, Any], layer: str) -> float:
+    rv = asset.get("recommended_volume")
+    if rv is not None:
+        return _safe_float(rv, 0.45 if layer == "ambient" else 0.22)
+    if layer == "ambient":
+        return 0.45
+    return 0.22
+
+
 def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str, Any]]:
     placed = []
-    base_positions = [
-        {"x": 0, "y": 0, "z": 2.5},
-        {"x": -2.0, "y": 0, "z": 1.5},
-        {"x": 2.0, "y": 0, "z": 1.5},
-        {"x": 0.5, "y": 0, "z": -1.5},
-        {"x": -1.2, "y": 0, "z": -1.0},
-    ]
-    for i, asset in enumerate(assets):
-        pos = base_positions[i % len(base_positions)]
-        base_volume = asset.get("default_volume", 0.6)
-        volume = min(0.85, base_volume * AUDIO_VOLUME_BOOST * (0.9 + 0.2 * density))
+    for asset in assets:
+        layer = _asset_layer(asset)
+        category = _asset_category(asset)
+        spatial_behavior = set(_as_lower_list(asset.get("spatial_behavior")))
+        distance = str(asset.get("recommended_distance", "middle")).lower()
+
+        default_pos = asset.get("default_position")
+        if isinstance(default_pos, list) and len(default_pos) >= 3:
+            pos = {"x": float(default_pos[0]), "y": float(default_pos[1]), "z": float(default_pos[2])}
+        elif isinstance(default_pos, dict):
+            pos = {
+                "x": _safe_float(default_pos.get("x"), 0.0),
+                "y": _safe_float(default_pos.get("y"), 0.0),
+                "z": _safe_float(default_pos.get("z"), 2.5),
+            }
+        else:
+            pos = _default_position_for_distance(distance)
+
+        if layer == "action" and "body_anchored" in spatial_behavior:
+            # Body anchored actions must remain near and static.
+            pos = {"x": 0.0, "y": _safe_float(pos.get("y"), 0.0), "z": min(1.5, max(1.0, _safe_float(pos.get("z"), 1.2)))}
+
+        base_volume = _safe_layer_volume(asset, layer)
+        volume = min(0.85, base_volume * AUDIO_VOLUME_BOOST)
+        loop = bool(asset.get("loop", category == "ambient"))
+        if layer == "event":
+            loop = False
+        motion = _normalize_motion_for_unity(asset.get("default_motion"), layer, sorted(spatial_behavior))
+        if layer == "action":
+            motion = {"type": "none"}
+        if layer == "event" and isinstance(motion, dict):
+            mtype = str(motion.get("type", "")).lower()
+            if _is_bird_like_event(asset):
+                # User preference: all bird/seagull events orbit/circle.
+                motion = {
+                    "type": "orbit",
+                    "speed": float(motion.get("speed", 0.08)),
+                    "radius": float(motion.get("radius", 1.6)),
+                }
+                mtype = "orbit"
+            if mtype in {"overhead_pass", "approach_recede"}:
+                motion = dict(motion)
+                motion.setdefault("repeat", False)
+                # Keep event movement finite per EEG segment: 1-2 passes.
+                motion["pass_count"] = int(motion.get("pass_count", random.choice([1, 2])))
+
+        repeat_count = int(asset.get("repeat_count", 1 if loop else 1))
+        if layer == "event":
+            # User preference: event playback should typically repeat 2-4 times.
+            configured = int(asset.get("repeat_count", 1))
+            if configured <= 1:
+                repeat_count = random.randint(2, 4)
+            else:
+                repeat_count = max(2, min(4, configured))
+        repeat_interval_sec = float(asset.get("repeat_interval_sec", 0))
+
         placed.append({
+            "id": asset["asset_id"],
+            "asset_id": asset["asset_id"],
             "source_id": asset["asset_id"],
-            "category": asset.get("category", "ambient"),
+            "label": asset.get("label", asset["asset_id"]),
+            "layer": layer,
+            "role": asset.get("role", layer),
+            "category": category,
             "asset_ref": asset.get("asset_ref") or asset.get("mock_file_path") or f"mock://{asset['asset_id']}.wav",
             "start_sec": 0,
             "end_sec": 60,
             "volume": round(volume, 2),
-            "loop": asset.get("category") == "ambient",
-            "repeat_count": 1 if asset.get("category") == "ambient" else max(2, min(6, int(2 + density * 5))),
-            "repeat_interval_sec": 0 if asset.get("category") == "ambient" else round(5 + (1 - density) * 6 + i * 1.5, 1),
+            "loop": loop,
+            "repeat_count": repeat_count,
+            "repeat_interval_sec": repeat_interval_sec,
             "position": pos,
-            "motion": {"type": "slow_orbit"} if asset.get("category") != "ambient" else {"type": "none"},
-            "fade_in_sec": 2,
-            "fade_out_sec": 3,
-            "role": asset.get("description", ""),
+            "motion": motion,
+            "spatial_behavior": sorted(spatial_behavior),
+            "recommended_distance": distance,
+            "fade_in_sec": float(asset.get("fade_in_sec", 2.0)),
+            "fade_out_sec": float(asset.get("fade_out_sec", 2.0)),
+            "auto_delete_after_sec": asset.get("auto_delete_after_sec"),
+            "description": asset.get("description", ""),
         })
     return placed
 
@@ -203,7 +800,7 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
 
 def bootstrap_scene(user_prompt: str) -> Dict[str, Any]:
     library = load_audio_library()
-    scene_family = select_scene_family(user_prompt)
+    scene_family = _canonical_scene_family(select_scene_family(user_prompt))
 
     if client:
         prompt = read_prompt("scene_bootstrap_prompt.md")
@@ -287,17 +884,153 @@ def interpret_window(payload: dict) -> Dict[str, Any]:
     }
 
     # deterministic fallback
+    raw_attention = _safe_float(features.get("attention_score"), 0.5)
+    raw_relaxation = _safe_float(features.get("relaxation_score"), 0.5)
+    raw_stability = _safe_float(features.get("stability_score"), 0.5)
+    attention = _clamp01(raw_attention, 0.5)
+    relaxation = _clamp01(raw_relaxation, 0.5)
+    stability = _clamp01(raw_stability, 0.5)
+    mind_wandering_risk = _clamp01(1 - attention, 0.5)
     return {
         "state_label": rule_state,
         "confidence": 0.42,
         "trend": "stable",
         "interpretation": f"Fallback: continuing {rule_state} based on ratios",
-        "attention": features.get("attention_score", 0.5),
-        "relaxation": features.get("relaxation_score", 0.5),
-        "stability": features.get("stability_score", 0.5),
-        "mind_wandering_risk": 1 - features.get("attention_score", 0.5),
+        "attention": attention,
+        "relaxation": relaxation,
+        "stability": stability,
+        "mind_wandering_risk": mind_wandering_risk,
         "scene_implication": implication_by_state.get(rule_state, implication_by_state["settling"]),
     }
+
+
+def _next_segment_index(previous_scene: Dict[str, Any]) -> int:
+    try:
+        return int(str(previous_scene.get("segment_id", "segment_000")).split("_")[-1]) + 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def _update_scene_runtime_state(
+    scene: Dict[str, Any],
+    previous_scene: Dict[str, Any],
+    mental_state: Dict[str, Any],
+    scene_family: str,
+) -> Dict[str, Any]:
+    new_segment_index = _next_segment_index(previous_scene)
+    segment_id = f"segment_{new_segment_index:03d}"
+    scene["scene_id"] = previous_scene.get("scene_id", scene.get("scene_id") or new_scene_id(scene_family))
+    scene["segment_id"] = segment_id
+    scene["scene_type"] = scene_family
+    scene["duration_sec"] = int(scene.get("duration_sec", 60) or 60)
+    scene.setdefault("atmosphere", previous_scene.get("atmosphere", SCENE_COPY.get(scene_family, SCENE_COPY["forest"])["atmosphere"]))
+    scene.setdefault("narration_script", previous_scene.get("narration_script", ""))
+
+    world_state = previous_scene.get("world_state", {}).copy()
+    incoming_world_state = scene.get("world_state", {})
+    if isinstance(incoming_world_state, dict):
+        world_state.update(incoming_world_state)
+    world_state["scene_family"] = scene_family
+    world_state["active_sources"] = [s["asset_id"] for s in scene.get("sources", [])]
+    world_state.setdefault("retired_sources", [])
+    world_state.setdefault("continuity_notes", "Keep identity stable; avoid sudden scene jumps.")
+
+    played_event_counts = world_state.get("played_event_counts", {})
+    if not isinstance(played_event_counts, dict):
+        played_event_counts = {}
+    recent_event_ids = world_state.get("recent_event_ids", [])
+    if not isinstance(recent_event_ids, list):
+        recent_event_ids = []
+    last_event_segment_by_id = world_state.get("last_event_segment_by_id", {})
+    if not isinstance(last_event_segment_by_id, dict):
+        last_event_segment_by_id = {}
+
+    any_event_selected = False
+    for src in scene.get("sources", []):
+        if str(src.get("layer", src.get("category", ""))).lower() == "event":
+            eid = str(src.get("asset_id") or src.get("source_id") or "")
+            if not eid:
+                continue
+            any_event_selected = True
+            try:
+                played_event_counts[eid] = int(played_event_counts.get(eid, 0)) + 1
+            except (TypeError, ValueError):
+                played_event_counts[eid] = 1
+            recent_event_ids.append(eid)
+            last_event_segment_by_id[eid] = new_segment_index
+
+    world_state["played_event_counts"] = played_event_counts
+    world_state["recent_event_ids"] = recent_event_ids[-3:]
+    world_state["last_event_segment_by_id"] = last_event_segment_by_id
+    if any_event_selected:
+        world_state["last_event_segment"] = new_segment_index
+    else:
+        world_state.setdefault("last_event_segment", -999)
+    scene["world_state"] = world_state
+
+    merged_mental = dict(mental_state)
+    merged_mental.setdefault("source", "llm" if client else "rule")
+    scene["mental_state"] = merged_mental
+    return scene
+
+
+def llm_adapt_scene(
+    previous_scene: Dict[str, Any],
+    mental_state: Dict[str, Any],
+    library: List[Dict[str, Any]],
+    scene_family: str,
+) -> Optional[Dict[str, Any]]:
+    if not client:
+        return None
+    prompt = read_prompt("scene_adaptation_prompt.md")
+    messages = [
+        {"role": "system", "content": prompt or "You update a spatial meditation scene."},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "previous_scene": previous_scene,
+                    "mental_state": mental_state,
+                    "scene_family": scene_family,
+                    "audio_library": library,
+                    "constraints": {
+                        "use_only_asset_ids_from_audio_library": True,
+                        "sources_per_segment": "2-5",
+                        "ambient_layers": "1-2",
+                        "event_and_action_may_coexist": True,
+                        "unity_listener_origin": {"x": 0, "y": 0, "z": 0},
+                        "supported_motion_types": [
+                            "none",
+                            "orbit",
+                            "drift",
+                            "overhead_pass",
+                            "approach_recede",
+                            "local_random",
+                            "breathing",
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    try:
+        res = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.25,
+        )
+        scene = json.loads(res.choices[0].message.content)
+        scene = normalize_scene_assets(scene, library, scene_family)
+        if scene is None:
+            return None
+        scene.setdefault("mental_state", {})
+        scene["mental_state"].update(mental_state)
+        scene["mental_state"]["source"] = "llm"
+        return _update_scene_runtime_state(scene, previous_scene, scene["mental_state"], scene_family)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +1039,12 @@ def interpret_window(payload: dict) -> Dict[str, Any]:
 
 def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], library: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     library = library or load_audio_library()
-    state_label = mental_state.get("state_label", "settling")
+    current_scene_family = _canonical_scene_family(previous_scene.get("scene_type", "forest"))
+    llm_scene = llm_adapt_scene(previous_scene, mental_state, library, current_scene_family)
+    if llm_scene is not None:
+        return llm_scene
+
+    state_label = str(mental_state.get("state_label", "settling"))
     implication = mental_state.get("scene_implication", {})
     if not isinstance(implication, dict):
         implication = {}
@@ -326,11 +1064,29 @@ def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], li
             "spatial_spread": 0.5,
         }
 
-    density = implication.get("density", 0.4)
-    motion_intensity = implication.get("motion_intensity", 0.25)
-    spatial_spread = implication.get("spatial_spread", implication.get("proximity", 0.5))
+    density = _clamp01(implication.get("density", 0.4), 0.4)
+    eventfulness = _clamp01(implication.get("eventfulness", 0.3), 0.3)
+    attention = _clamp01(mental_state.get("attention", 0.5), 0.5)
+    relaxation = _clamp01(mental_state.get("relaxation", 0.5), 0.5)
+    stability = _clamp01(mental_state.get("stability", 0.5), 0.5)
+    mind_wandering_risk = _clamp01(mental_state.get("mind_wandering_risk", 0.5), 0.5)
+    anxiety = mental_state.get("anxiety")
+    if anxiety is not None:
+        anxiety = _clamp01(anxiety, 0.5)
 
-    assets = choose_sources(library, previous_scene.get("scene_type", "forest"), density)
+    assets = choose_sources(
+        library,
+        current_scene_family,
+        density,
+        eventfulness=eventfulness,
+        attention=attention,
+        relaxation=relaxation,
+        anxiety=anxiety,
+        state_label=state_label,
+        mind_wandering_risk=mind_wandering_risk,
+        stability=stability,
+        previous_scene=previous_scene,
+    )
     placed = place_sources(assets, density)
 
     atmosphere = previous_scene.get("atmosphere", "quiet forest")
@@ -341,28 +1097,44 @@ def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], li
     world_state["active_sources"] = [a["asset_id"] for a in assets]
     world_state.setdefault("retired_sources", [])
     world_state.setdefault("continuity_notes", notes)
+    new_segment_index = int(previous_scene.get("segment_id", "segment_000").split("_")[-1]) + 1
+    played_event_counts = world_state.get("played_event_counts", {})
+    if not isinstance(played_event_counts, dict):
+        played_event_counts = {}
+    recent_event_ids = world_state.get("recent_event_ids", [])
+    if not isinstance(recent_event_ids, list):
+        recent_event_ids = []
+    last_event_segment_by_id = world_state.get("last_event_segment_by_id", {})
+    if not isinstance(last_event_segment_by_id, dict):
+        last_event_segment_by_id = {}
+    any_event_selected = False
+    for src in placed:
+        if str(src.get("layer", src.get("category", ""))).lower() == "event":
+            eid = str(src.get("asset_id") or src.get("source_id") or "")
+            if eid:
+                any_event_selected = True
+                try:
+                    played_event_counts[eid] = int(played_event_counts.get(eid, 0)) + 1
+                except (TypeError, ValueError):
+                    played_event_counts[eid] = 1
+                recent_event_ids.append(eid)
+                last_event_segment_by_id[eid] = new_segment_index
+    if len(recent_event_ids) > 3:
+        recent_event_ids = recent_event_ids[-3:]
+    world_state["played_event_counts"] = played_event_counts
+    world_state["recent_event_ids"] = recent_event_ids
+    world_state["last_event_segment_by_id"] = last_event_segment_by_id
+    if any_event_selected:
+        world_state["last_event_segment"] = new_segment_index
+    else:
+        world_state.setdefault("last_event_segment", -999)
 
-    segment_id = f"segment_{int(previous_scene.get('segment_id', 'segment_000').split('_')[-1]) + 1:03d}"
-    segment_num = int(segment_id.split("_")[-1])
-    for i, source in enumerate(placed):
-        if source.get("category") == "ambient":
-            source["motion"] = {
-                "type": "orbit",
-                "speed": round(0.03 + motion_intensity * 0.08, 2),
-                "radius": round(0.25 + spatial_spread * 0.35, 2),
-            }
-        elif source.get("category") == "event":
-            source["motion"] = {
-                "type": "orbit",
-                "speed": round(0.18 + motion_intensity * 0.55 + (i * 0.04), 2),
-                "radius": round(0.9 + spatial_spread * 1.1 + (segment_num % 2) * 0.2, 2),
-            }
-        source["volume"] = round(min(0.8, source.get("volume", 0.6) * (0.82 + density * 0.16)), 2)
+    segment_id = f"segment_{new_segment_index:03d}"
 
     return build_unity_scene(
         scene_id=previous_scene.get("scene_id"),
         segment_id=segment_id,
-        scene_type=previous_scene.get("scene_type", "forest"),
+        scene_type=current_scene_family,
         atmosphere=atmosphere,
         narration_script=narration,
         sources=placed,
