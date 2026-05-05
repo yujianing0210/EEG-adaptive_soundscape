@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NEUROSCAPE Session Reflection</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue: #6690ff;
+      --green: #84d976;
+      --purple: #a56cf0;
+      --orange: #e6a64d;
+      --text: rgba(255,255,255,.9);
+      --muted: rgba(255,255,255,.64);
+      --line: rgba(255,255,255,.16);
+      --glass: rgba(12, 30, 18, .46);
+    }
+
+    html, body { min-height: 100%; }
+    body {
+      font-family: Inter, Arial, sans-serif;
+      color: var(--text);
+      background:
+        linear-gradient(180deg, rgba(5,18,10,.58), rgba(4,14,8,.9)),
+        radial-gradient(circle at 55% 4%, rgba(205,235,210,.22), transparent 34%),
+        radial-gradient(circle at 82% 50%, rgba(120,170,110,.18), transparent 26%),
+        url("https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=2400&q=88") center/cover fixed no-repeat;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: rgba(0,0,0,.16);
+      backdrop-filter: blur(2px);
+    }
+
+    .summary-shell {
+      position: relative;
+      z-index: 1;
+      width: min(1680px, calc(100vw - 84px));
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 34px 0 26px;
+    }
+
+    .summary-header {
+      position: relative;
+      min-height: 104px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: start;
+      gap: 20px;
+    }
+
+    .brand-block { text-align: center; }
+    .brand {
+      letter-spacing: .54em;
+      text-indent: .54em;
+      font-size: 28px;
+      font-weight: 400;
+      line-height: 1.15;
+    }
+    .tagline {
+      margin-top: 4px;
+      color: rgba(255,255,255,.62);
+      letter-spacing: .13em;
+      font-size: 16px;
+    }
+
+    .page-title-group {
+      align-self: end;
+      padding: 0 0 16px 18px;
+    }
+    .page-title-group h1 {
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: .36em;
+      line-height: 1.3;
+    }
+    .page-title-group p {
+      margin-top: 8px;
+      color: rgba(255,255,255,.76);
+      font-size: 15px;
+    }
+
+    .export-button {
+      justify-self: end;
+      margin-top: 30px;
+      border: 1px solid rgba(255,255,255,.26);
+      background: rgba(255,255,255,.05);
+      color: rgba(255,255,255,.86);
+      border-radius: 22px;
+      padding: 11px 22px;
+      font-size: 14px;
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+    }
+
+    .glass-card {
+      background: linear-gradient(145deg, rgba(255,255,255,.095), rgba(255,255,255,.035));
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: 0 18px 45px rgba(0,0,0,.28);
+      backdrop-filter: blur(18px);
+    }
+
+    .section-title-row,
+    .card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h2 {
+      font-size: 17px;
+      font-weight: 500;
+      letter-spacing: .02em;
+    }
+    h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: rgba(255,255,255,.84);
+    }
+
+    .overview-section { padding: 16px 24px 18px; }
+    .overview-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr) minmax(420px, 1.2fr);
+      gap: 20px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .metric-card {
+      min-height: 126px;
+      display: grid;
+      grid-template-columns: 128px 1fr;
+      align-items: center;
+      gap: 16px;
+    }
+    .metric-ring {
+      position: relative;
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(var(--metric-color) calc(var(--score) * 1%), rgba(255,255,255,.12) 0);
+    }
+    .metric-ring::before {
+      content: "";
+      position: absolute;
+      inset: 14px;
+      border-radius: 50%;
+      background: rgba(9,25,14,.86);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+    .metric-icon {
+      position: relative;
+      z-index: 1;
+      width: 34px;
+      height: 34px;
+      color: var(--metric-color);
+      opacity: .92;
+    }
+    .metric-value {
+      font-size: 30px;
+      font-weight: 500;
+      line-height: 1;
+    }
+    .metric-value small {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 400;
+      margin-left: 4px;
+    }
+    .metric-label {
+      margin-top: 14px;
+      font-size: 14px;
+    }
+    .metric-state {
+      margin-top: 9px;
+      color: var(--metric-color);
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .attention { --metric-color: var(--blue); }
+    .relaxation { --metric-color: var(--green); }
+    .stability { --metric-color: var(--purple); }
+
+    .ai-summary-card {
+      min-height: 142px;
+      padding: 22px 28px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.18);
+      background:
+        radial-gradient(circle at 84% 50%, rgba(115,136,210,.28), transparent 24%),
+        linear-gradient(135deg, rgba(255,255,255,.11), rgba(255,255,255,.045));
+      overflow: hidden;
+    }
+    .ai-summary-card h3 {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 18px;
+      font-weight: 500;
+    }
+    .ai-summary-card p {
+      width: min(520px, 100%);
+      margin-top: 14px;
+      color: rgba(255,255,255,.76);
+      line-height: 1.55;
+      font-size: 15px;
+    }
+
+    .timeline-section {
+      margin-top: 10px;
+      padding: 14px 24px 10px;
+    }
+    .legend {
+      display: flex;
+      gap: 28px;
+      color: rgba(255,255,255,.75);
+      font-size: 12px;
+    }
+    .legend-item::before {
+      content: "";
+      display: inline-block;
+      width: 24px;
+      height: 2px;
+      margin: 0 8px 3px 0;
+      border-radius: 2px;
+      background: currentColor;
+    }
+    .legend-item.attention { color: var(--blue); }
+    .legend-item.relaxation { color: var(--green); }
+    .legend-item.stability { color: var(--purple); }
+    .timeline-chart {
+      height: 330px;
+      margin-top: 8px;
+      border-radius: 8px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-color: rgba(255,255,255,.24) rgba(255,255,255,.06);
+      scrollbar-width: thin;
+    }
+    .timeline-chart::-webkit-scrollbar { height: 8px; }
+    .timeline-chart::-webkit-scrollbar-track {
+      background: rgba(255,255,255,.06);
+      border-radius: 10px;
+    }
+    .timeline-chart::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,.24);
+      border-radius: 10px;
+    }
+    .timeline-chart svg {
+      display: block;
+      min-width: 100%;
+    }
+    .chart-label {
+      fill: rgba(255,255,255,.78);
+      font-size: 12px;
+    }
+    .axis-label {
+      fill: rgba(255,255,255,.7);
+      font-size: 11px;
+    }
+    .grid-line { stroke: rgba(255,255,255,.1); stroke-width: 1; }
+    .series-line {
+      fill: none;
+      stroke-width: 2.2;
+      filter: drop-shadow(0 0 5px currentColor);
+    }
+    .audio-marker text {
+      fill: rgba(255,255,255,.88);
+      font-size: 11px;
+      text-anchor: middle;
+    }
+    .audio-marker line { stroke-width: 1; stroke-dasharray: 3 3; }
+    .marker-dot { stroke: rgba(0,0,0,.35); stroke-width: 1; }
+
+    .breakdown-section {
+      margin-top: 10px;
+      padding: 14px 20px;
+    }
+    .breakdown-grid {
+      display: grid;
+      grid-template-columns: 1.7fr .9fr 1fr .68fr;
+      gap: 18px;
+      margin-top: 10px;
+    }
+    .breakdown-panel {
+      min-height: 188px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.035);
+    }
+
+    .sound-axis {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 8px;
+      margin-top: 10px;
+      color: rgba(255,255,255,.72);
+      font-size: 12px;
+    }
+    .time-scale {
+      display: flex;
+      justify-content: space-between;
+      grid-column: 2;
+      padding: 0 2px 4px;
+    }
+    .sound-row {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 8px;
+      align-items: center;
+      margin: 11px 0;
+    }
+    .sound-row-label {
+      color: rgba(255,255,255,.88);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .timeline-track {
+      position: relative;
+      min-height: 24px;
+      border-left: 1px solid rgba(255,255,255,.16);
+      border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    .sound-bar {
+      position: absolute;
+      top: 2px;
+      height: 20px;
+      min-width: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      color: rgba(255,255,255,.9);
+      font-size: 11px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      padding: 0 8px;
+      border: 1px solid rgba(255,255,255,.14);
+    }
+    .sound-bar.ambient { background: linear-gradient(90deg, rgba(132,217,118,.62), rgba(132,217,118,.38)); }
+    .sound-bar.event { background: linear-gradient(90deg, rgba(230,166,77,.72), rgba(230,166,77,.48)); color: rgba(20,16,7,.9); }
+    .sound-bar.action { background: linear-gradient(90deg, rgba(165,108,240,.72), rgba(165,108,240,.48)); }
+
+    .composition-layout {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      align-items: center;
+      gap: 10px;
+      height: 146px;
+    }
+    .donut-wrap {
+      width: 142px;
+      height: 142px;
+      display: grid;
+      place-items: center;
+    }
+    .composition-legend,
+    .top-list {
+      list-style: none;
+      display: grid;
+      gap: 14px;
+      font-size: 12px;
+      color: rgba(255,255,255,.82);
+    }
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+      vertical-align: -1px;
+    }
+    .dot.ambient { background: var(--green); }
+    .dot.event { background: var(--orange); }
+    .dot.action { background: var(--purple); }
+
+    .top-row {
+      display: grid;
+      grid-template-columns: 24px 1fr 118px 42px;
+      align-items: center;
+      gap: 10px;
+    }
+    .top-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: 1px solid currentColor;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      color: var(--green);
+    }
+    .top-icon.event { color: var(--orange); }
+    .top-icon.action { color: var(--purple); }
+    .top-bar-bg {
+      height: 5px;
+      border-radius: 8px;
+      background: rgba(255,255,255,.22);
+      overflow: hidden;
+    }
+    .top-bar-fill {
+      height: 100%;
+      border-radius: 8px;
+      background: currentColor;
+      color: var(--green);
+    }
+    .top-row.event .top-bar-fill { color: var(--orange); }
+    .top-row.action .top-bar-fill { color: var(--purple); }
+
+    .insight-panel {
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 88% 86%, rgba(190,235,160,.28), transparent 36%),
+        rgba(255,255,255,.04);
+    }
+    .insight-panel h3 {
+      font-size: 17px;
+      font-weight: 500;
+      margin-bottom: 10px;
+    }
+    .insight-panel p {
+      color: rgba(255,255,255,.82);
+      line-height: 1.42;
+      font-size: 14px;
+    }
+
+    .system-loop-footer {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 18px;
+      margin-top: 24px;
+      color: rgba(255,255,255,.78);
+      font-size: 15px;
+    }
+    .system-loop-footer strong { color: #b28dff; font-weight: 600; }
+
+    @media (max-width: 1180px) {
+      .summary-shell { width: min(100vw - 28px, 980px); }
+      .summary-header { grid-template-columns: 1fr; text-align: center; }
+      .page-title-group { padding: 0; }
+      .export-button { justify-self: center; margin-top: 0; }
+      .overview-grid,
+      .breakdown-grid { grid-template-columns: 1fr; }
+      .metric-card { grid-template-columns: 112px 1fr; }
+      .timeline-chart { height: 360px; }
+      .system-loop-footer { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <main class="summary-shell">
+    <header class="summary-header">
+      <div class="page-title-group">
+        <h1>SESSION REFLECTION</h1>
+        <p>Understand your mental state and the soundscape journey</p>
+      </div>
+
+      <div class="brand-block">
+        <div class="brand">NEUROSCAPE</div>
+        <div class="tagline">Your mind. Your soundscape.</div>
+      </div>
+
+      <button class="export-button" type="button" onclick="window.print()">Export Report</button>
+    </header>
+
+    <section class="glass-card overview-section">
+      <h2>A. Session Overview</h2>
+      <div class="overview-grid">
+        <article class="metric-card attention">
+          <div class="metric-ring" id="attention-ring" style="--score:72">
+            <svg class="metric-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 12 20 5l-7 16-2.4-6.6L4 12Z" fill="currentColor"/>
+            </svg>
+          </div>
+          <div>
+            <div class="metric-value"><span id="metric-attention">72</span><small>/100</small></div>
+            <div class="metric-label">Average Attention</div>
+            <div class="metric-state" id="state-attention">Moderate</div>
+          </div>
+        </article>
+
+        <article class="metric-card relaxation">
+          <div class="metric-ring" id="relaxation-ring" style="--score:78">
+            <svg class="metric-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 21V3m0 12c-5-1.7-7-5.2-7-9.5C9.4 7.4 12 10.2 12 15Zm0 0c5-1.7 7-5.2 7-9.5-4.4 1.9-7 4.7-7 9.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div>
+            <div class="metric-value"><span id="metric-relaxation">78</span><small>/100</small></div>
+            <div class="metric-label">Relaxation Level</div>
+            <div class="metric-state" id="state-relaxation">High</div>
+          </div>
+        </article>
+
+        <article class="metric-card stability">
+          <div class="metric-ring" id="stability-ring" style="--score:65">
+            <svg class="metric-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4c2.7 2.4 4 4.7 4 7a4 4 0 0 1-8 0c0-2.3 1.3-4.6 4-7Zm0 4c-4.5 1.2-7 3.4-7 6.5A5.5 5.5 0 0 0 12 20a5.5 5.5 0 0 0 7-5.5C19 11.4 16.5 9.2 12 8Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div>
+            <div class="metric-value"><span id="metric-stability">65</span><small>/100</small></div>
+            <div class="metric-label">Stability Score</div>
+            <div class="metric-state" id="state-stability">Moderate</div>
+          </div>
+        </article>
+
+        <article class="ai-summary-card">
+          <h3><span aria-hidden="true">✧</span> AI Summary</h3>
+          <p id="ai-summary-text">You gradually transitioned from a distracted state to a more stable and relaxed condition, especially during the latter half of the session.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="glass-card timeline-section">
+      <div class="section-title-row">
+        <h2>B. Mental State Timeline</h2>
+        <div class="legend">
+          <span class="legend-item attention">Attention</span>
+          <span class="legend-item relaxation">Relaxation</span>
+          <span class="legend-item stability">Stability</span>
+        </div>
+      </div>
+      <div class="timeline-chart" id="mentalTimelineChart"></div>
+    </section>
+
+    <section class="glass-card breakdown-section">
+      <h2>C. Audio Experience Breakdown</h2>
+      <div class="breakdown-grid">
+        <article class="breakdown-panel">
+          <h3>1. Sound Timeline</h3>
+          <div class="sound-axis">
+            <div></div>
+            <div class="time-scale" id="sound-time-scale"></div>
+          </div>
+          <div class="sound-row">
+            <span class="sound-row-label">Ambient</span>
+            <div class="timeline-track" id="track-ambient"></div>
+          </div>
+          <div class="sound-row">
+            <span class="sound-row-label">Events</span>
+            <div class="timeline-track" id="track-event"></div>
+          </div>
+          <div class="sound-row">
+            <span class="sound-row-label">Action</span>
+            <div class="timeline-track" id="track-action"></div>
+          </div>
+          <div class="legend" style="margin:14px 0 0 72px;gap:18px">
+            <span><span class="dot ambient"></span>Ambient</span>
+            <span><span class="dot event"></span>Events</span>
+            <span><span class="dot action"></span>Action</span>
+          </div>
+        </article>
+
+        <article class="breakdown-panel">
+          <h3>2. Sound Composition</h3>
+          <div class="composition-layout">
+            <div class="donut-wrap" id="soundCompositionChart"></div>
+            <ul class="composition-legend" id="compositionLegend"></ul>
+          </div>
+        </article>
+
+        <article class="breakdown-panel">
+          <h3>3. Top Audio Elements</h3>
+          <ul class="top-list" id="topAudioElements"></ul>
+        </article>
+
+        <article class="breakdown-panel insight-panel">
+          <h3>Insight</h3>
+          <p id="insightText">Increased relaxation coincided with the introduction of continuous ambient sounds such as ocean waves and forest ambience, which may have helped you achieve a more stable state.</p>
+        </article>
+      </div>
+    </section>
+
+    <footer class="system-loop-footer">
+      <span>Closed-loop neuroadaptive system:</span>
+      <strong>EEG</strong>
+      <span>-></span>
+      <span>Mental State</span>
+      <span>-></span>
+      <span>Audio Adaptation</span>
+      <span>-></span>
+      <strong>EEG</strong>
+    </footer>
+  </main>
+
+  <script>
+    const DEMO_SUMMARY_DATA = {
+      session: { duration_sec: 1476 },
+      metrics: { average_attention: 72, average_relaxation: 78, average_stability: 65 },
+      ai_summary: "You gradually transitioned from a distracted state to a more stable and relaxed condition, especially during the latter half of the session.",
+      mental_timeline: [
+        { time_sec: 0, attention: 65, relaxation: 30, stability: 38, mental_state: "distracted" },
+        { time_sec: 150, attention: 70, relaxation: 33, stability: 40, mental_state: "distracted" },
+        { time_sec: 300, attention: 78, relaxation: 28, stability: 48, mental_state: "distracted" },
+        { time_sec: 480, attention: 60, relaxation: 22, stability: 32, mental_state: "distracted" },
+        { time_sec: 660, attention: 35, relaxation: 35, stability: 26, mental_state: "calm" },
+        { time_sec: 840, attention: 31, relaxation: 54, stability: 42, mental_state: "calm" },
+        { time_sec: 1020, attention: 47, relaxation: 70, stability: 48, mental_state: "calm" },
+        { time_sec: 1200, attention: 64, relaxation: 82, stability: 45, mental_state: "focused" },
+        { time_sec: 1380, attention: 72, relaxation: 91, stability: 56, mental_state: "focused" },
+        { time_sec: 1476, attention: 76, relaxation: 94, stability: 58, mental_state: "focused" }
+      ],
+      audio_events: [
+        { time_sec: 150, label: "Bird sounds introduced", type: "event", resource: "bird_calls" },
+        { time_sec: 420, label: "Ocean waves increased", type: "ambient", resource: "ocean_waves" },
+        { time_sec: 780, label: "Wind ambience added", type: "ambient", resource: "wind_ambience" },
+        { time_sec: 1110, label: "Voice guidance triggered", type: "action", resource: "voice_guidance" }
+      ],
+      audio_timeline: [
+        { layer: "ambient", resource: "forest_ambience", label: "Forest Ambience", start_sec: 0, end_sec: 300 },
+        { layer: "ambient", resource: "ocean_waves", label: "Ocean Waves", start_sec: 300, end_sec: 900 },
+        { layer: "ambient", resource: "forest_ambience", label: "Forest Ambience", start_sec: 900, end_sec: 1476 },
+        { layer: "event", resource: "birds", label: "Birds", start_sec: 120, end_sec: 230 },
+        { layer: "event", resource: "wind", label: "Wind", start_sec: 720, end_sec: 850 },
+        { layer: "event", resource: "distant_thunder", label: "Distant Thunder", start_sec: 960, end_sec: 1280 },
+        { layer: "action", resource: "voice_guidance", label: "Voice Guidance", start_sec: 850, end_sec: 1430 }
+      ],
+      audio_composition: { ambient: 60, event: 25, action: 15 },
+      top_audio_elements: [
+        { label: "Ocean Waves", percent: 40, type: "ambient" },
+        { label: "Bird Calls", percent: 22, type: "event" },
+        { label: "Wind Ambience", percent: 18, type: "action" },
+        { label: "Forest Ambience", percent: 12, type: "ambient" },
+        { label: "Distant Thunder", percent: 8, type: "ambient" }
+      ],
+      insight: "Increased relaxation coincided with the introduction of continuous ambient sounds such as ocean waves and forest ambience, which may have helped you achieve a more stable state."
+    };
+
+    const COLORS = {
+      attention: "#6690ff",
+      relaxation: "#84d976",
+      stability: "#a56cf0",
+      ambient: "#84d976",
+      event: "#e6a64d",
+      action: "#a56cf0"
+    };
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      const data = await loadSummaryData();
+      renderSummary(data);
+    });
+
+    async function loadSummaryData() {
+      try {
+        const summaryRes = await fetch("/api/session_summary", { cache: "no-store" });
+        if (summaryRes.ok) {
+          const data = await summaryRes.json();
+          if (data && Array.isArray(data.mental_timeline) && data.mental_timeline.length) {
+            return data;
+          }
+        }
+
+        const unityRes = await fetch("/api/unity_state", { cache: "no-store" });
+        const stateRes = await fetch("/api/state", { cache: "no-store" });
+        if (!unityRes.ok || !stateRes.ok) return DEMO_SUMMARY_DATA;
+        const unity = await unityRes.json();
+        const state = await stateRes.json();
+        return buildSummaryFromExistingState(unity, state);
+      } catch (err) {
+        console.warn("Using demo summary data because live state could not be loaded:", err);
+        return DEMO_SUMMARY_DATA;
+      }
+    }
+
+    function buildSummaryFromExistingState(unity, state) {
+      const payload = state.current_payload;
+      const features = payload?.current_features || {};
+      const hist = Array.isArray(state.mental_history) ? state.mental_history : [];
+      const scene = unity.scene || state.scene || {};
+      const sources = Array.isArray(scene.sources) ? scene.sources : [];
+      const duration = Math.max(300, (state.total_windows || hist.length || 5) * 30);
+
+      if (!payload && !sources.length && !hist.length) return DEMO_SUMMARY_DATA;
+
+      const baseAttention = scaleFeature(features.attention_score, 72);
+      const baseRelaxation = scaleFeature(features.relaxation_score, 78);
+      const baseStability = scaleFeature(features.stability_score, 65);
+      const points = makeTimelineFromHistory(hist, duration, baseAttention, baseRelaxation, baseStability);
+      const audioTimeline = makeAudioTimeline(sources, duration);
+      const composition = makeComposition(audioTimeline);
+      const topAudio = makeTopAudio(audioTimeline);
+
+      return {
+        session: { duration_sec: duration },
+        metrics: {
+          average_attention: average(points.map(p => p.attention)),
+          average_relaxation: average(points.map(p => p.relaxation)),
+          average_stability: average(points.map(p => p.stability))
+        },
+        ai_summary: makeAISummary(hist),
+        mental_timeline: points,
+        audio_events: makeAudioEvents(audioTimeline),
+        audio_timeline: audioTimeline,
+        audio_composition: composition,
+        top_audio_elements: topAudio,
+        insight: makeInsight(topAudio)
+      };
+    }
+
+    function scaleFeature(value, fallback) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallback;
+      if (n <= 1) return clamp(Math.round(n * 100), 0, 100);
+      return clamp(Math.round(n), 0, 100);
+    }
+
+    function makeTimelineFromHistory(history, duration, att, rel, stab) {
+      if (!history.length) {
+        return DEMO_SUMMARY_DATA.mental_timeline.map(p => ({
+          ...p,
+          time_sec: Math.round(p.time_sec / DEMO_SUMMARY_DATA.session.duration_sec * duration)
+        }));
+      }
+      const count = Math.max(history.length, 3);
+      return Array.from({ length: count }, (_, i) => {
+        const h = history[i] || {};
+        const t = Math.round(i * duration / Math.max(1, count - 1));
+        const state = String(h.llm_state || h.rule_state || "").toLowerCase();
+        const progress = count === 1 ? 1 : i / (count - 1);
+        return {
+          time_sec: t,
+          attention: clamp(Math.round(att - 12 + progress * 18 + wave(i, 5)), 0, 100),
+          relaxation: clamp(Math.round(rel - 28 + progress * 34 + wave(i, 7)), 0, 100),
+          stability: clamp(Math.round(stab - 18 + progress * 22 + wave(i, 4)), 0, 100),
+          mental_state: state.includes("focus") || state.includes("relax") ? "focused" : state.includes("sett") ? "calm" : "distracted"
+        };
+      });
+    }
+
+    function makeAudioTimeline(sources, duration) {
+      if (!sources.length) return DEMO_SUMMARY_DATA.audio_timeline;
+      const byLayer = { ambient: [], event: [], action: [] };
+      sources.forEach((source, i) => {
+        const layer = normalizeLayer(source.layer || source.category);
+        const label = prettify(source.label || source.asset_id || source.source_id || `Sound ${i + 1}`);
+        byLayer[layer].push({ source, label, index: i });
+      });
+      const rows = [];
+      Object.entries(byLayer).forEach(([layer, items]) => {
+        const usable = items.length ? items : [];
+        usable.forEach((item, i) => {
+          const laneCount = Math.max(usable.length, 1);
+          const span = duration / laneCount;
+          const start = layer === "ambient" ? Math.round(i * span) : Math.round((i + .35) * span);
+          const end = layer === "ambient" ? Math.round((i + 1) * span) : Math.min(duration, start + Math.max(90, span * .45));
+          rows.push({
+            layer,
+            resource: item.source.asset_id || item.source.source_id || item.label,
+            label: item.label,
+            start_sec: start,
+            end_sec: end
+          });
+        });
+      });
+      return rows.length ? rows : DEMO_SUMMARY_DATA.audio_timeline;
+    }
+
+    function makeComposition(audioTimeline) {
+      const totals = { ambient: 0, event: 0, action: 0 };
+      audioTimeline.forEach(item => {
+        const layer = normalizeLayer(item.layer);
+        totals[layer] += Math.max(0, Number(item.end_sec) - Number(item.start_sec));
+      });
+      const total = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
+      return {
+        ambient: Math.round(totals.ambient / total * 100),
+        event: Math.round(totals.event / total * 100),
+        action: Math.max(0, 100 - Math.round(totals.ambient / total * 100) - Math.round(totals.event / total * 100))
+      };
+    }
+
+    function makeTopAudio(audioTimeline) {
+      const totals = {};
+      audioTimeline.forEach(item => {
+        const key = item.label;
+        const dur = Math.max(1, Number(item.end_sec) - Number(item.start_sec));
+        if (!totals[key]) totals[key] = { label: key, type: normalizeLayer(item.layer), value: 0 };
+        totals[key].value += dur;
+      });
+      const all = Object.values(totals).sort((a, b) => b.value - a.value).slice(0, 5);
+      const sum = all.reduce((acc, item) => acc + item.value, 0) || 1;
+      return all.map(item => ({ label: item.label, type: item.type, percent: Math.round(item.value / sum * 100) }));
+    }
+
+    function makeAudioEvents(audioTimeline) {
+      return audioTimeline
+        .filter(item => item.layer !== "ambient")
+        .slice(0, 4)
+        .map(item => ({
+          time_sec: item.start_sec,
+          label: `${item.label} ${item.layer === "action" ? "triggered" : "introduced"}`,
+          type: item.layer,
+          resource: item.resource
+        }));
+    }
+
+    function makeAISummary(history) {
+      if (!history.length) return DEMO_SUMMARY_DATA.ai_summary;
+      const first = history[0]?.llm_state || history[0]?.rule_state || "an initial state";
+      const last = history[history.length - 1]?.llm_state || history[history.length - 1]?.rule_state || "a later state";
+      return `You moved from ${first} toward ${last}, while the soundscape adjusted its density, motion, and grounding cues across the session.`;
+    }
+
+    function makeInsight(topAudio) {
+      const names = topAudio.slice(0, 2).map(x => x.label.toLowerCase()).join(" and ") || "continuous ambient sounds";
+      return `Increased relaxation coincided with the use of ${names}, suggesting that stable ambient layers and gentle cues may have supported a calmer mental state.`;
+    }
+
+    function renderSummary(data) {
+      renderMetrics(data.metrics);
+      setText("ai-summary-text", data.ai_summary);
+      renderMentalTimeline(data.mental_timeline, data.audio_events, data.session.duration_sec);
+      renderAudioTimeline(data.audio_timeline, data.session.duration_sec);
+      renderComposition(data.audio_composition);
+      renderTopAudioElements(data.top_audio_elements);
+      setText("insightText", data.insight);
+    }
+
+    function renderMetrics(metrics) {
+      setMetric("attention", metrics.average_attention);
+      setMetric("relaxation", metrics.average_relaxation);
+      setMetric("stability", metrics.average_stability);
+    }
+
+    function setMetric(key, value) {
+      const v = clamp(Math.round(Number(value) || 0), 0, 100);
+      setText(`metric-${key}`, v);
+      setText(`state-${key}`, v >= 75 ? "High" : v >= 50 ? "Moderate" : "Low");
+      const ring = document.getElementById(`${key}-ring`);
+      if (ring) ring.style.setProperty("--score", v);
+    }
+
+    function renderMentalTimeline(points, events, duration) {
+      const el = document.getElementById("mentalTimelineChart");
+      const safePoints = Array.isArray(points) && points.length ? points : DEMO_SUMMARY_DATA.mental_timeline;
+      const safeEvents = compactTimelineEvents(Array.isArray(events) ? events : []);
+      const maxT = Math.max(duration || 1, ...safePoints.map(p => p.time_sec || 0), 1);
+      const minWidthByTime = Math.ceil(maxT / 60) * 110;
+      const minWidthByWindows = safePoints.length * 150;
+      const minWidthByEvents = safeEvents.length * 260;
+      const w = Math.max(1320, minWidthByTime + 120, minWidthByWindows + 120, minWidthByEvents + 220);
+      const h = 330;
+      const pad = { l: 42, r: 24, t: 28, b: 126 };
+      const chartW = w - pad.l - pad.r;
+      const chartH = h - pad.t - pad.b;
+      const x = t => pad.l + (t / maxT) * chartW;
+      const y = v => pad.t + chartH - (clamp(v, 0, 100) / 100) * chartH;
+      const path = key => safePoints.map((p, i) => `${i ? "L" : "M"} ${x(p.time_sec).toFixed(1)} ${y(p[key]).toFixed(1)}`).join(" ");
+      const zones = buildStateZones(safePoints, maxT);
+      const yTicks = [0, 25, 50, 75, 100];
+      const tickStep = maxT <= 360 ? 60 : maxT <= 900 ? 120 : maxT <= 1800 ? 300 : 600;
+      const xTicks = [];
+      for (let t = 0; t < maxT; t += tickStep) xTicks.push(t);
+      if (xTicks[xTicks.length - 1] !== maxT) xTicks.push(maxT);
+      const markers = layoutTimelineMarkers(safeEvents.slice(0, Math.max(4, Math.floor(w / 260))), maxT, chartW, pad.l);
+
+      el.innerHTML = `
+        <svg viewBox="0 0 ${w} ${h}" width="${w}" height="100%" preserveAspectRatio="xMinYMin meet" role="img" aria-label="Mental state timeline">
+          <rect x="${pad.l}" y="${pad.t}" width="${chartW}" height="${chartH}" fill="rgba(255,255,255,.025)" rx="5"/>
+          ${zones.map(z => `<rect x="${x(z.start)}" y="${pad.t}" width="${x(z.end) - x(z.start)}" height="${chartH}" fill="${z.color}"/><text class="chart-label" x="${(x(z.start)+x(z.end))/2}" y="${pad.t + 18}" text-anchor="middle">${z.label}</text>`).join("")}
+          ${yTicks.map(v => `<line class="grid-line" x1="${pad.l}" x2="${pad.l + chartW}" y1="${y(v)}" y2="${y(v)}"/><text class="axis-label" x="${pad.l - 10}" y="${y(v) + 4}" text-anchor="end">${v}</text>`).join("")}
+          ${xTicks.map(t => `<line class="grid-line" x1="${x(t)}" x2="${x(t)}" y1="${pad.t}" y2="${pad.t + chartH}"/><text class="axis-label" x="${x(t)}" y="${pad.t + chartH + 20}" text-anchor="middle">${formatTime(t)}</text>`).join("")}
+          <path class="series-line" style="color:${COLORS.attention}" stroke="${COLORS.attention}" d="${path("attention")}"/>
+          <path class="series-line" style="color:${COLORS.relaxation}" stroke="${COLORS.relaxation}" d="${path("relaxation")}"/>
+          <path class="series-line" style="color:${COLORS.stability}" stroke="${COLORS.stability}" d="${path("stability")}"/>
+          ${markers.map((m, i) => {
+            const mx = m.x, color = COLORS[normalizeLayer(m.type)];
+            const labelY = h - 12 - (m.lane * 26);
+            const iconY = h - 38 - (m.lane * 26);
+            const lineEnd = iconY - 16;
+            return `<g class="audio-marker">
+              <line x1="${mx}" x2="${mx}" y1="${pad.t + chartH - 3}" y2="${lineEnd}" stroke="${color}"/>
+              <circle class="marker-dot" cx="${mx}" cy="${pad.t + chartH - 4}" r="5" fill="${color}"/>
+              <circle cx="${mx}" cy="${iconY}" r="15" fill="rgba(0,0,0,.34)" stroke="${color}"/>
+              <text x="${mx}" y="${iconY + 4}">${markerSymbol(m.type)}</text>
+              <text x="${mx}" y="${labelY}">${escapeHtml(shortLabel(m.label))}</text>
+            </g>`;
+          }).join("")}
+          <text class="axis-label" x="${w - 8}" y="${h - 32}" text-anchor="end">Time (min)</text>
+        </svg>`;
+    }
+
+    function compactTimelineEvents(events) {
+      const sorted = [...events]
+        .filter(e => Number.isFinite(Number(e.time_sec)))
+        .sort((a, b) => Number(a.time_sec) - Number(b.time_sec));
+      const groups = [];
+      sorted.forEach(event => {
+        const t = Number(event.time_sec);
+        const last = groups[groups.length - 1];
+        if (last && Math.abs(t - last.time_sec) <= 20 && normalizeLayer(event.type) === normalizeLayer(last.type)) {
+          last.items.push(event);
+          last.label = last.items.slice(0, 2).map(item => shortLabel(item.label)).join(" + ");
+          if (last.items.length > 2) last.label += ` +${last.items.length - 2}`;
+        } else {
+          groups.push({
+            ...event,
+            time_sec: t,
+            type: normalizeLayer(event.type),
+            items: [event],
+          });
+        }
+      });
+      return groups;
+    }
+
+    function layoutTimelineMarkers(events, maxT, chartW, leftPad) {
+      const minGap = 132;
+      const lanes = [
+        Number.NEGATIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        Number.NEGATIVE_INFINITY
+      ];
+      return events.map(event => {
+        const rawX = leftPad + (Number(event.time_sec) / maxT) * chartW;
+        let lane = lanes.findIndex(lastX => rawX - lastX >= minGap);
+        if (lane < 0) lane = lanes.length - 1;
+        const x = lane === lanes.length - 1 && rawX - lanes[lane] < minGap
+          ? Math.min(leftPad + chartW - 42, lanes[lane] + minGap)
+          : rawX;
+        lanes[lane] = x;
+        return { ...event, x, lane };
+      });
+    }
+
+    function buildStateZones(points, maxT) {
+      const zones = [];
+      points.forEach((point, i) => {
+        const start = Number(point.time_sec) || 0;
+        const end = i + 1 < points.length ? Number(points[i + 1].time_sec) || maxT : maxT;
+        const rawStatus = point.status || point.llm_state || point.rule_state || point.mental_state || "unknown";
+        const label = prettyStatus(rawStatus);
+        const color = stateZoneColor(rawStatus, point.mental_state);
+        const last = zones[zones.length - 1];
+        if (last && last.label === label && last.color === color && Math.abs(last.end - start) < 1) {
+          last.end = end;
+        } else {
+          zones.push({ label, start, end, color });
+        }
+      });
+      return zones.length ? zones : [{ label: "Unknown", start: 0, end: maxT, color: "rgba(255,255,255,.06)" }];
+    }
+
+    function stateZoneColor(status, fallback) {
+      const s = String(status || fallback || "").toLowerCase();
+      if (s.includes("distract") || s.includes("unstable") || s.includes("anxiety")) return "rgba(230,166,77,.13)";
+      if (s.includes("sett") || s.includes("calm")) return "rgba(102,144,255,.12)";
+      if (s.includes("relax") || s.includes("focus") || s.includes("stable")) return "rgba(132,217,118,.13)";
+      return "rgba(255,255,255,.06)";
+    }
+
+    function prettyStatus(status) {
+      return String(status || "unknown")
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, char => char.toUpperCase());
+    }
+
+    function renderAudioTimeline(items, duration) {
+      const total = Math.max(duration || 1, ...items.map(i => i.end_sec || 0), 1);
+      const scale = document.getElementById("sound-time-scale");
+      scale.innerHTML = [0, .2, .4, .6, .8, 1].map(p => `<span>${formatTime(total * p)}</span>`).join("");
+      ["ambient", "event", "action"].forEach(layer => {
+        const track = document.getElementById(`track-${layer}`);
+        const layerItems = layoutAudioBars(items.filter(i => normalizeLayer(i.layer) === layer), total);
+        const laneCount = Math.max(1, ...layerItems.map(item => item.lane + 1));
+        track.style.height = `${laneCount * 26}px`;
+        track.innerHTML = layerItems.map(item => {
+          const left = clamp(Number(item.start_sec) / total * 100, 0, 100);
+          const width = clamp((Number(item.end_sec) - Number(item.start_sec)) / total * 100, 6, 100 - left);
+          return `<div class="sound-bar ${layer}" title="${escapeHtml(item.label)}" style="left:${left}%;width:${width}%;top:${2 + item.lane * 26}px">${escapeHtml(item.label)}</div>`;
+        }).join("");
+      });
+    }
+
+    function layoutAudioBars(items, total) {
+      const lanes = [];
+      return [...items].sort((a, b) => Number(a.start_sec) - Number(b.start_sec)).map(item => {
+        const start = Number(item.start_sec) || 0;
+        const end = Math.max(start + 1, Number(item.end_sec) || total);
+        let lane = lanes.findIndex(laneEnd => start >= laneEnd);
+        if (lane < 0) {
+          lane = lanes.length;
+          lanes.push(end);
+        } else {
+          lanes[lane] = end;
+        }
+        return { ...item, lane };
+      });
+    }
+
+    function renderComposition(comp) {
+      const ambient = clamp(comp.ambient || 0, 0, 100);
+      const event = clamp(comp.event || 0, 0, 100);
+      const action = clamp(comp.action ?? (100 - ambient - event), 0, 100);
+      const r = 48;
+      const c = 2 * Math.PI * r;
+      const parts = [
+        { key: "ambient", val: ambient, color: COLORS.ambient },
+        { key: "event", val: event, color: COLORS.event },
+        { key: "action", val: action, color: COLORS.action }
+      ];
+      let offset = 0;
+      document.getElementById("soundCompositionChart").innerHTML = `
+        <svg viewBox="0 0 130 130" width="142" height="142">
+          <circle cx="65" cy="65" r="${r}" fill="rgba(255,255,255,.03)" stroke="rgba(255,255,255,.12)" stroke-width="28"/>
+          ${parts.map(part => {
+            const dash = c * part.val / 100;
+            const node = `<circle cx="65" cy="65" r="${r}" fill="none" stroke="${part.color}" stroke-width="28" stroke-dasharray="${dash} ${c - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 65 65)"/>`;
+            offset += dash;
+            return node;
+          }).join("")}
+          <circle cx="65" cy="65" r="25" fill="rgba(8,25,14,.9)"/>
+          <text x="65" y="69" text-anchor="middle" fill="rgba(255,255,255,.86)" font-size="15">${ambient}%</text>
+        </svg>`;
+      document.getElementById("compositionLegend").innerHTML = parts.map(part => `<li><span class="dot ${part.key}"></span>${capitalize(part.key)} ${part.val}%</li>`).join("");
+    }
+
+    function renderTopAudioElements(items) {
+      const icons = { ambient: "≋", event: "♪", action: "↺" };
+      document.getElementById("topAudioElements").innerHTML = items.map(item => {
+        const type = normalizeLayer(item.type);
+        const percent = clamp(Math.round(item.percent || 0), 0, 100);
+        return `<li class="top-row ${type}">
+          <span class="top-icon ${type}">${icons[type]}</span>
+          <span>${escapeHtml(item.label)}</span>
+          <span class="top-bar-bg"><span class="top-bar-fill" style="display:block;width:${percent}%"></span></span>
+          <span>${percent}%</span>
+        </li>`;
+      }).join("");
+    }
+
+    function normalizeLayer(value) {
+      const v = String(value || "").toLowerCase();
+      if (v.includes("event")) return "event";
+      if (v.includes("action") || v.includes("voice") || v.includes("guidance")) return "action";
+      return "ambient";
+    }
+
+    function average(values) {
+      const nums = values.map(Number).filter(Number.isFinite);
+      return nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length) : 0;
+    }
+
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function wave(i, amp) { return Math.sin(i * 1.7) * amp; }
+    function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+    function markerSymbol(type) { return normalizeLayer(type) === "event" ? "♪" : normalizeLayer(type) === "action" ? "↺" : "≋"; }
+    function shortLabel(label) { return String(label || "").replace(" sounds", "").replace(" introduced", "").replace(" triggered", ""); }
+    function prettify(value) { return String(value || "").replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase()); }
+    function formatTime(sec) {
+      const s = Math.max(0, Math.round(sec));
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+  </script>
+</body>
+</html>
