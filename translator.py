@@ -12,6 +12,7 @@ def scene_to_commands(scene_json, prev_ids=None):
 
     commands = []
     current_ids = set()
+    segment_id = str(scene_json.get("segment_id", ""))
 
     sources = scene_json.get("sources", [])
 
@@ -25,7 +26,10 @@ def scene_to_commands(scene_json, prev_ids=None):
         # =========================
         # 基本参数
         # =========================
-        position = s.get("position", {"x": 0, "y": 0, "z": 2})
+        layer = s.get("layer", s.get("category", ""))
+        category = s.get("category", s.get("layer", ""))
+        is_action = str(layer or category).lower() == "action"
+        position = {"x": 0, "y": 0, "z": 0} if is_action else s.get("position", {"x": 0, "y": 0, "z": 2})
         volume = min(0.85, s.get("volume", 0.5) * UNITY_VOLUME_BOOST)
 
         # =========================
@@ -41,9 +45,11 @@ def scene_to_commands(scene_json, prev_ids=None):
             "action": "create" if sid not in prev_ids else "update",
             "id": sid,
             "clip": clip,
-            "layer": s.get("layer", s.get("category", "")),
-            "category": s.get("category", s.get("layer", "")),
+            "layer": layer,
+            "category": category,
+            "segment_id": segment_id,
             "position": [position["x"], position["y"], position["z"]],
+            "relative_to_listener": is_action or bool(s.get("relative_to_listener", False)),
             "volume": volume,
             "loop": bool(s.get("loop", s.get("category") == "ambient")),
             "repeat_count": int(s.get("repeat_count", 1)),
@@ -120,37 +126,48 @@ def normalize_motion(motion):
             ]
         return None
 
+    def _copy_listener_flags(out):
+        if "around_listener" in motion:
+            out["around_listener"] = bool(motion.get("around_listener"))
+        if "relative_to_listener" in motion:
+            out["relative_to_listener"] = bool(motion.get("relative_to_listener"))
+        return out
+
     if mtype == "slow_orbit":
-        return {
+        return _copy_listener_flags({
             "type": "orbit",
             "speed": 0.22,
             "radius": 1.2
-        }
+        })
 
     elif mtype == "orbit" or mtype == "circle":
-        return {
+        out = {
             "type": "orbit",
             "speed": float(motion.get("speed", 0.5)),
             "radius": float(motion.get("radius", 2.0))
         }
+        center = _as_vec3(motion.get("center"))
+        if center is not None:
+            out["center"] = center
+        return _copy_listener_flags(out)
 
     elif mtype == "breathing":
-        return {
+        return _copy_listener_flags({
             "type": "breathing",
             "speed": float(motion.get("speed", 0.2)),
             "minRadius": float(motion.get("minRadius", 1.5)),
             "maxRadius": float(motion.get("maxRadius", 3.0))
-        }
+        })
 
     elif mtype == "random":
-        return {
+        return _copy_listener_flags({
             "type": "random"
-        }
+        })
 
     elif mtype == "none":
-        return {
+        return _copy_listener_flags({
             "type": "none"
-        }
+        })
 
     elif mtype == "drift":
         out = {
@@ -164,7 +181,7 @@ def normalize_motion(motion):
             out["start"] = start
         if end is not None:
             out["end"] = end
-        return out
+        return _copy_listener_flags(out)
 
     elif mtype == "overhead_pass":
         out = {
@@ -179,7 +196,7 @@ def normalize_motion(motion):
             out["start"] = start
         if end is not None:
             out["end"] = end
-        return out
+        return _copy_listener_flags(out)
 
     elif mtype == "approach_recede":
         out = {
@@ -198,7 +215,7 @@ def normalize_motion(motion):
             out["mid"] = mid
         if end is not None:
             out["end"] = end
-        return out
+        return _copy_listener_flags(out)
 
     elif mtype == "local_random":
         out = {
@@ -209,10 +226,10 @@ def normalize_motion(motion):
         center = _as_vec3(motion.get("center"))
         if center is not None:
             out["center"] = center
-        return out
+        return _copy_listener_flags(out)
 
     print(f"Unknown motion type: {mtype}")
-    return {"type": "none"}
+    return _copy_listener_flags({"type": "none"})
 
 
 # =========================

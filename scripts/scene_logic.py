@@ -104,6 +104,17 @@ def _clamp01(value: Any, default: float = 0.5) -> float:
     return max(0.0, min(1.0, v))
 
 
+def _score_unit(value: Any, default: float = 0.5) -> float:
+    """Normalize scores that may arrive as 0-1 or 0-10 into 0-1."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    if v <= 1.0:
+        return max(0.0, min(1.0, v))
+    return max(0.0, min(1.0, v / 10.0))
+
+
 def _asset_layer(asset: Dict[str, Any]) -> str:
     layer = str(
         asset.get("layer")
@@ -309,7 +320,12 @@ def choose_sources(
                 or density >= 0.55
             )
         ]
-        allow_secondary_ambient = density >= 0.55 or flags["attention_low"] or (seg_idx > 0 and seg_idx % 4 == 0)
+        allow_secondary_ambient = (
+            density >= 0.55
+            or flags["attention_low"]
+            or scene_family in {"forest", "night_forest"}
+            or (seg_idx > 0 and seg_idx % 4 == 0)
+        )
         if allow_secondary_ambient and ambient_texture_pool:
             ambient_texture_pool.sort(
                 key=lambda a: (
@@ -321,7 +337,8 @@ def choose_sources(
             secondary_ambient = ambient_texture_pool[0]
             selected.append(secondary_ambient)
 
-    # 2) Event slot (at most one), occasional, and suppress under anxiety/settling.
+    # 2) Event slot (at most one). Keep cues gentle, but frequent enough to
+    # make the soundscape respond audibly to each EEG segment.
     event_selected = None
     event_candidates = [
         a for a in grouped["event"]
@@ -340,27 +357,27 @@ def choose_sources(
         (attention is not None and attention < 0.32)
         or (mind_wandering_risk is not None and mind_wandering_risk >= 0.85)
     )
-    if flags["attention_low"] and not flags["settling"]:
+    if flags["attention_low"]:
         allow_event = True
     if mind_wandering_risk is not None and mind_wandering_risk >= 0.72 and not flags["anxiety_high"]:
         allow_event = True
-    # Keep events occasional in normal mode.
-    if allow_event and seg_idx % 2 == 1 and (mind_wandering_risk or 0.0) < 0.8:
-        allow_event = False
-    min_event_gap = 3 if flags["anxiety_high"] else 2
+    if not flags["anxiety_high"] and not flags["settling"] and eventfulness >= 0.12:
+        allow_event = True
+    min_event_gap = 2 if flags["anxiety_high"] else 0
     if allow_event and (seg_idx - last_event_segment) < min_event_gap and not strong_attention_recovery:
         allow_event = False
 
     if allow_event:
-        # Probabilistic gate to avoid "every window always has an event".
-        trigger_prob = 0.30 + 0.45 * _clamp01(eventfulness, 0.3)
+        trigger_prob = 0.65 + 0.25 * _clamp01(eventfulness, 0.3)
+        if eventfulness >= 0.4 and not flags["anxiety_high"]:
+            trigger_prob = 1.0
         if flags["attention_low"]:
             trigger_prob += 0.10
         if flags["anxiety_high"]:
-            trigger_prob -= 0.20
+            trigger_prob -= 0.25
         if strong_attention_recovery:
             trigger_prob += 0.15
-        trigger_prob = max(0.10, min(0.92, trigger_prob))
+        trigger_prob = max(0.25, min(0.95, trigger_prob))
         if random.random() > trigger_prob:
             allow_event = False
 
@@ -418,7 +435,8 @@ def choose_sources(
                 score -= 1.8
             scored.append((score, random.random(), a))
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        if scored and scored[0][0] > -2.0:
+        score_threshold = -999.0 if flags["attention_low"] else -2.0
+        if scored and scored[0][0] > score_threshold:
             best_score = scored[0][0]
             # Randomize among near-top candidates to avoid repetitive single-event selection.
             top_pool = [row[2] for row in scored if row[0] >= best_score - 0.9]
@@ -572,6 +590,9 @@ def _normalize_llm_source(source: Dict[str, Any], asset: Dict[str, Any]) -> Dict
         value = source.get("auto_delete_after_sec")
         merged["auto_delete_after_sec"] = None if value is None else max(0.0, min(120.0, _safe_float(value, 0.0)))
 
+    merged["position"] = _spatialized_position(asset, layer, str(merged.get("recommended_distance", "middle")), merged["position"])
+    merged["motion"] = _spatialized_motion(asset, layer, merged["position"], merged.get("motion", {"type": "none"}))
+
     return merged
 
 
@@ -626,16 +647,100 @@ def normalize_scene_assets(scene: Dict[str, Any], library: List[Dict[str, Any]],
     return scene
 
 
+def _boost_event_repeats(scene: Dict[str, Any]) -> Dict[str, Any]:
+    for source in scene.get("sources", []) or []:
+        if str(source.get("layer", source.get("category", ""))).lower() != "event":
+            continue
+        source["loop"] = False
+        try:
+            repeat_count = int(source.get("repeat_count", 1))
+        except (TypeError, ValueError):
+            repeat_count = 1
+        source["repeat_count"] = max(2, min(4, repeat_count if repeat_count > 1 else random.randint(2, 4)))
+        try:
+            interval = float(source.get("repeat_interval_sec", 0))
+        except (TypeError, ValueError):
+            interval = 0.0
+        if interval <= 0:
+            source["repeat_interval_sec"] = random.choice([8.0, 10.0, 12.0, 14.0])
+    return scene
+
+
+def _add_gentle_event_if_missing(
+    scene: Dict[str, Any],
+    library: List[Dict[str, Any]],
+    scene_family: str,
+    mental_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    sources = scene.get("sources", []) or []
+    if any(str(s.get("layer", s.get("category", ""))).lower() == "event" for s in sources):
+        return _boost_event_repeats(scene)
+    if len(sources) >= 5:
+        return scene
+
+    mental_state = mental_state or {}
+    state_label = str(mental_state.get("state_label", "stable_relaxation"))
+    relaxation = _clamp01(mental_state.get("relaxation", 0.7), 0.7)
+    anxiety = mental_state.get("anxiety")
+    anxiety_high = False
+    if anxiety is not None:
+        anxiety_high = _clamp01(anxiety, 0.0) >= 0.65
+    if state_label == "settling" and relaxation < 0.45:
+        anxiety_high = True
+    if anxiety_high:
+        return scene
+
+    world_state = scene.get("world_state", {}) if isinstance(scene.get("world_state", {}), dict) else {}
+    recent_ids = set(str(v) for v in world_state.get("recent_event_ids", []) if str(v))
+    candidates = [
+        a for a in library
+        if _asset_layer(a) == "event"
+        and _matches_scene(a, scene_family)
+        and _asset_allowed_under_state(a, anxiety_high=False)
+    ]
+    if not candidates:
+        return scene
+    fresh = [a for a in candidates if str(a.get("asset_id", "")) not in recent_ids]
+    if fresh:
+        candidates = fresh
+
+    def event_score(asset: Dict[str, Any]) -> tuple[float, float]:
+        tags = set(_as_lower_list(asset.get("tags")))
+        use_when = set(_as_lower_list(asset.get("use_when")))
+        score = _safe_float(asset.get("priority"), 0.5)
+        score += 1.2 if str(asset.get("recommended_distance", "")).lower() in {"far", "middle", "wide"} else 0.0
+        score += 0.8 if {"attention_low", "adaptive_shift", "immersion"} & use_when else 0.0
+        score += 0.4 if {"bird", "seagull", "water", "wave", "leaf"} & tags else 0.0
+        score -= _safe_float(asset.get("suddenness"), 0.0) * 1.5
+        if bool(asset.get("is_rare_event")) and state_label != "stable_relaxation":
+            score -= 1.5
+        return score, random.random()
+
+    candidates.sort(key=event_score, reverse=True)
+    event_asset = candidates[0]
+    event_source = _normalize_llm_source(
+        {
+            "repeat_count": random.randint(2, 4),
+            "repeat_interval_sec": random.choice([8.0, 10.0, 12.0, 14.0]),
+        },
+        event_asset,
+    )
+    scene["sources"] = sources + [event_source]
+    scene.setdefault("world_state", {})
+    scene["world_state"]["active_sources"] = [s["source_id"] for s in scene["sources"]]
+    return _boost_event_repeats(scene)
+
+
 def fallback_bootstrap_scene(user_prompt: str, library: List[Dict[str, Any]], scene_family: str) -> Dict[str, Any]:
     scene_family = _canonical_scene_family(scene_family)
     assets = choose_sources(
         library,
         scene_family,
         density=0.4,
-        eventfulness=0.2,
+        eventfulness=0.45,
         attention=0.6,
         relaxation=0.6,
-        state_label="settling",
+        state_label="stable_relaxation",
         mind_wandering_risk=0.3,
         stability=0.55,
         previous_scene=None,
@@ -662,11 +767,11 @@ def _default_position_for_distance(recommended_distance: str) -> Dict[str, float
     if d == "near":
         return {"x": 0.0, "y": 0.0, "z": 1.2}
     if d == "middle":
-        return {"x": 2.5, "y": 0.0, "z": 3.0}
+        return {"x": 2.8, "y": 0.0, "z": 2.7}
     if d == "far":
-        return {"x": 3.5, "y": 1.0, "z": 5.5}
+        return {"x": 3.8, "y": 1.0, "z": 4.0}
     if d == "wide":
-        return {"x": 0.0, "y": 0.0, "z": 4.5}
+        return {"x": -2.4, "y": 0.4, "z": 3.4}
     return {"x": 0.0, "y": 0.0, "z": 2.5}
 
 
@@ -703,10 +808,131 @@ def _normalize_motion_for_unity(motion: Any, layer: str, spatial_behavior: List[
 def _safe_layer_volume(asset: Dict[str, Any], layer: str) -> float:
     rv = asset.get("recommended_volume")
     if rv is not None:
-        return _safe_float(rv, 0.45 if layer == "ambient" else 0.22)
+        volume = _safe_float(rv, 0.45 if layer == "ambient" else 0.22)
+        aid = str(asset.get("asset_id", "")).lower()
+        tags = set(_as_lower_list(asset.get("tags")))
+        if layer == "ambient" and ("wave" in aid or "waves" in tags or "shoreline" in aid):
+            return min(volume, 0.28)
+        if layer == "ambient" and ("forest" in aid or "forest" in tags):
+            return max(volume, 0.72)
+        if layer in {"event", "action"} and ("forest" in aid or "forest" in tags):
+            return min(volume, 0.24)
+        return volume
     if layer == "ambient":
         return 0.45
     return 0.22
+
+
+def _vec3_list(pos: Dict[str, float]) -> List[float]:
+    return [float(pos.get("x", 0.0)), float(pos.get("y", 0.0)), float(pos.get("z", 0.0))]
+
+
+def _lateral_sign(asset_id: str) -> float:
+    return -1.0 if sum(ord(ch) for ch in asset_id) % 2 == 0 else 1.0
+
+
+def _spatialized_position(asset: Dict[str, Any], layer: str, distance: str, pos: Dict[str, float]) -> Dict[str, float]:
+    pos = dict(pos)
+    aid = str(asset.get("asset_id", ""))
+    sign = _lateral_sign(aid)
+    distance = str(distance or "").lower()
+
+    if layer == "action":
+        return {"x": 0.0, "y": 0.0, "z": 0.0}
+
+    if layer == "ambient":
+        if abs(_safe_float(pos.get("x"), 0.0)) < 0.4:
+            pos["x"] = sign * random.uniform(0.45, 1.05)
+        else:
+            pos["x"] = max(-1.2, min(1.2, _safe_float(pos.get("x"), 0.0)))
+        pos["z"] = max(1.2, min(2.2, _safe_float(pos.get("z"), 1.8)))
+        pos["y"] = max(-0.2, min(0.7, _safe_float(pos.get("y"), 0.0)))
+        return pos
+
+    if distance == "near":
+        pos["x"] = sign * random.uniform(1.0, 1.8)
+        pos["z"] = random.uniform(1.4, 2.1)
+    elif distance == "middle":
+        pos["x"] = sign * random.uniform(2.0, 3.3)
+        pos["z"] = random.uniform(2.4, 3.4)
+    elif distance in {"far", "wide"}:
+        pos["x"] = sign * random.uniform(2.8, 4.4)
+        pos["z"] = random.uniform(3.2, 4.8)
+        pos["y"] = max(0.4, min(2.2, _safe_float(pos.get("y"), 1.0)))
+    else:
+        pos["x"] = sign * random.uniform(1.8, 3.4)
+        pos["z"] = random.uniform(2.2, 3.8)
+    return pos
+
+
+def _spatialized_motion(asset: Dict[str, Any], layer: str, pos: Dict[str, float], motion: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(motion, dict):
+        motion = {"type": "none"}
+    motion = dict(motion)
+    mtype = str(motion.get("type", "none")).lower()
+    aid = str(asset.get("asset_id", ""))
+    center = _vec3_list(pos)
+
+    if layer == "action":
+        return {"type": "none", "relative_to_listener": True}
+
+    if layer == "ambient":
+        if mtype in {"none", "static", ""}:
+            return {"type": "none"}
+        if mtype == "drift":
+            motion["duration"] = max(28.0, _safe_float(motion.get("duration"), 28.0))
+            motion["repeat"] = True
+            motion["start"] = [center[0] - 0.4, center[1], center[2] - 0.1]
+            motion["end"] = [center[0] + 0.4, center[1], center[2] + 0.1]
+        return motion
+
+    if mtype in {"none", "static", ""}:
+        sign = _lateral_sign(aid)
+        return {
+            "type": "approach_recede",
+            "start": [sign * 4.6, center[1], 3.4],
+            "mid": [sign * 0.8, max(0.2, center[1]), 1.2],
+            "end": [-sign * 4.6, center[1], 3.0],
+            "duration": 7.0,
+            "repeat": False,
+            "pass_count": 2,
+            "volume_curve": "fade_in_then_out",
+            "relative_to_listener": True,
+        }
+    if mtype in {"orbit", "circle"}:
+        motion["type"] = "orbit"
+        motion["center"] = [0.0, max(0.2, min(1.2, center[1])), 0.6]
+        motion["radius"] = max(3.0, _safe_float(motion.get("radius"), 1.6))
+        motion["speed"] = max(0.28, _safe_float(motion.get("speed"), 0.08))
+        motion["around_listener"] = True
+        motion["relative_to_listener"] = True
+        return motion
+    if mtype == "local_random":
+        motion["center"] = [0.0, center[1], 1.2]
+        motion["radius"] = max(2.0, _safe_float(motion.get("radius"), 0.4))
+        motion["speed"] = max(0.16, _safe_float(motion.get("speed"), 0.04))
+        motion["relative_to_listener"] = True
+        return motion
+    if mtype == "drift":
+        sign = _lateral_sign(aid)
+        motion["start"] = [sign * 4.6, center[1], 3.2]
+        motion["end"] = [-sign * 4.6, center[1], 1.4]
+        motion["duration"] = max(7.0, min(11.0, _safe_float(motion.get("duration"), 8.0)))
+        motion["repeat"] = True
+        motion["relative_to_listener"] = True
+        return motion
+    if mtype in {"overhead_pass", "approach_recede"}:
+        sign = _lateral_sign(aid)
+        motion["start"] = [sign * 4.8, max(center[1], 0.7), 3.6]
+        motion["end"] = [-sign * 4.8, max(center[1], 0.7), 2.0]
+        if mtype == "approach_recede":
+            motion["mid"] = [sign * 0.6, max(center[1], 0.4), 0.9]
+            motion["volume_curve"] = "fade_in_then_out"
+        motion["duration"] = max(5.0, min(9.0, _safe_float(motion.get("duration"), 7.0)))
+        motion["pass_count"] = max(2, int(_safe_float(motion.get("pass_count"), 2)))
+        motion["relative_to_listener"] = True
+        return motion
+    return motion
 
 
 def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str, Any]]:
@@ -729,9 +955,11 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
         else:
             pos = _default_position_for_distance(distance)
 
-        if layer == "action" and "body_anchored" in spatial_behavior:
-            # Body anchored actions must remain near and static.
-            pos = {"x": 0.0, "y": _safe_float(pos.get("y"), 0.0), "z": min(1.5, max(1.0, _safe_float(pos.get("z"), 1.2)))}
+        if layer == "action":
+            # Action sounds are body/user anchored and should follow the listener/camera.
+            pos = {"x": 0.0, "y": 0.0, "z": 0.0}
+        else:
+            pos = _spatialized_position(asset, layer, distance, pos)
 
         base_volume = _safe_layer_volume(asset, layer)
         volume = min(0.85, base_volume * AUDIO_VOLUME_BOOST)
@@ -740,7 +968,7 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
             loop = False
         motion = _normalize_motion_for_unity(asset.get("default_motion"), layer, sorted(spatial_behavior))
         if layer == "action":
-            motion = {"type": "none"}
+            motion = {"type": "none", "relative_to_listener": True}
         if layer == "event" and isinstance(motion, dict):
             mtype = str(motion.get("type", "")).lower()
             if _is_bird_like_event(asset):
@@ -756,6 +984,7 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
                 motion.setdefault("repeat", False)
                 # Keep event movement finite per EEG segment: 1-2 passes.
                 motion["pass_count"] = int(motion.get("pass_count", random.choice([1, 2])))
+        motion = _spatialized_motion(asset, layer, pos, motion)
 
         repeat_count = int(asset.get("repeat_count", 1 if loop else 1))
         if layer == "event":
@@ -766,6 +995,8 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
             else:
                 repeat_count = max(2, min(4, configured))
         repeat_interval_sec = float(asset.get("repeat_interval_sec", 0))
+        if layer == "event" and repeat_count > 1 and repeat_interval_sec <= 0:
+            repeat_interval_sec = random.choice([8.0, 10.0, 12.0, 14.0])
 
         placed.append({
             "id": asset["asset_id"],
@@ -783,6 +1014,7 @@ def place_sources(assets: List[Dict[str, Any]], density: float) -> List[Dict[str
             "repeat_count": repeat_count,
             "repeat_interval_sec": repeat_interval_sec,
             "position": pos,
+            "relative_to_listener": layer == "action",
             "motion": motion,
             "spatial_behavior": sorted(spatial_behavior),
             "recommended_distance": distance,
@@ -820,6 +1052,7 @@ def bootstrap_scene(user_prompt: str) -> Dict[str, Any]:
             if scene is not None:
                 scene.setdefault("mental_state", {})
                 scene["mental_state"]["source"] = "llm"
+                scene = _add_gentle_event_if_missing(scene, library, scene_family, scene["mental_state"])
                 return scene
         except Exception:
             pass  # fall back to deterministic
@@ -856,14 +1089,14 @@ def interpret_window(payload: dict) -> Dict[str, Any]:
         "stable_relaxation": {
             "density": 0.32,
             "motion_intensity": 0.18,
-            "eventfulness": 0.15,
+            "eventfulness": 0.45,
             "guidance_intensity": 0.25,
             "proximity": 0.7,
         },
         "settling": {
             "density": 0.48,
             "motion_intensity": 0.28,
-            "eventfulness": 0.22,
+            "eventfulness": 0.32,
             "guidance_intensity": 0.4,
             "proximity": 0.55,
         },
@@ -877,7 +1110,7 @@ def interpret_window(payload: dict) -> Dict[str, Any]:
         "distracted_or_unstable": {
             "density": 0.72,
             "motion_intensity": 0.12,
-            "eventfulness": 0.08,
+            "eventfulness": 0.35,
             "guidance_intensity": 0.65,
             "proximity": 0.85,
         },
@@ -887,9 +1120,9 @@ def interpret_window(payload: dict) -> Dict[str, Any]:
     raw_attention = _safe_float(features.get("attention_score"), 0.5)
     raw_relaxation = _safe_float(features.get("relaxation_score"), 0.5)
     raw_stability = _safe_float(features.get("stability_score"), 0.5)
-    attention = _clamp01(raw_attention, 0.5)
-    relaxation = _clamp01(raw_relaxation, 0.5)
-    stability = _clamp01(raw_stability, 0.5)
+    attention = _score_unit(raw_attention, 0.5)
+    relaxation = _score_unit(raw_relaxation, 0.5)
+    stability = _score_unit(raw_stability, 0.5)
     mind_wandering_risk = _clamp01(1 - attention, 0.5)
     return {
         "state_label": rule_state,
@@ -1028,6 +1261,7 @@ def llm_adapt_scene(
         scene.setdefault("mental_state", {})
         scene["mental_state"].update(mental_state)
         scene["mental_state"]["source"] = "llm"
+        scene = _add_gentle_event_if_missing(scene, library, scene_family, scene["mental_state"])
         return _update_scene_runtime_state(scene, previous_scene, scene["mental_state"], scene_family)
     except Exception:
         return None
@@ -1066,9 +1300,9 @@ def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], li
 
     density = _clamp01(implication.get("density", 0.4), 0.4)
     eventfulness = _clamp01(implication.get("eventfulness", 0.3), 0.3)
-    attention = _clamp01(mental_state.get("attention", 0.5), 0.5)
-    relaxation = _clamp01(mental_state.get("relaxation", 0.5), 0.5)
-    stability = _clamp01(mental_state.get("stability", 0.5), 0.5)
+    attention = _score_unit(mental_state.get("attention", 0.5), 0.5)
+    relaxation = _score_unit(mental_state.get("relaxation", 0.5), 0.5)
+    stability = _score_unit(mental_state.get("stability", 0.5), 0.5)
     mind_wandering_risk = _clamp01(mental_state.get("mind_wandering_risk", 0.5), 0.5)
     anxiety = mental_state.get("anxiety")
     if anxiety is not None:

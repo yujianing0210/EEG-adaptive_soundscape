@@ -13,13 +13,13 @@ public class WebSocketManager : MonoBehaviour
     public float masterVolumeMultiplier = 1.0f;
 
     [Range(0f, 1f)]
-    public float spatialBlend = 0.22f;
+    public float spatialBlend = 0.88f;
 
     [Range(1f, 80f)]
-    public float minDistance = 25f;
+    public float minDistance = 1.2f;
 
     [Range(10f, 200f)]
-    public float maxDistance = 100f;
+    public float maxDistance = 18f;
 
     [Range(1f, 8f)]
     public float signalGain = 1.0f;
@@ -41,7 +41,7 @@ public class WebSocketManager : MonoBehaviour
 
     [Header("Motion")]
     [Range(0.1f, 5f)]
-    public float motionSpeedMultiplier = 1.0f;
+    public float motionSpeedMultiplier = 1.35f;
 
     [Range(0.2f, 4f)]
     public float visualMarkerScale = 0.7f;
@@ -56,6 +56,9 @@ public class WebSocketManager : MonoBehaviour
     readonly Dictionary<string, GameObject> soundObjects = new Dictionary<string, GameObject>();
     readonly Dictionary<string, MotionData> motionMap = new Dictionary<string, MotionData>();
     readonly Dictionary<string, Vector3> basePositionMap = new Dictionary<string, Vector3>();
+    readonly Dictionary<string, Vector3> listenerLocalPositionMap = new Dictionary<string, Vector3>();
+    readonly Dictionary<string, string> layerMap = new Dictionary<string, string>();
+    readonly Dictionary<string, string> categoryMap = new Dictionary<string, string>();
     readonly Dictionary<string, float> targetVolumeMap = new Dictionary<string, float>();
     readonly Dictionary<string, Coroutine> repeatCoroutineMap = new Dictionary<string, Coroutine>();
     readonly Dictionary<string, string> repeatConfigMap = new Dictionary<string, string>();
@@ -66,6 +69,7 @@ public class WebSocketManager : MonoBehaviour
 
     async void Start()
     {
+        ApplyImmersiveAudioDefaults();
         AudioListener.volume = 1f;
         websocket = new WebSocket("ws://localhost:8765");
 
@@ -87,6 +91,26 @@ public class WebSocketManager : MonoBehaviour
         websocket.OnClose += (e) => Debug.Log("WebSocket closed: " + e);
 
         await websocket.Connect();
+    }
+
+    void ApplyImmersiveAudioDefaults()
+    {
+        if (spatialBlend < 0.6f)
+        {
+            spatialBlend = 0.88f;
+        }
+        if (minDistance > 8f)
+        {
+            minDistance = 1.2f;
+        }
+        if (maxDistance > 60f)
+        {
+            maxDistance = 18f;
+        }
+        if (motionSpeedMultiplier < 1.1f)
+        {
+            motionSpeedMultiplier = 1.35f;
+        }
     }
 
     void ProcessCommand(string json)
@@ -163,6 +187,9 @@ public class WebSocketManager : MonoBehaviour
         soundObjects.Clear();
         motionMap.Clear();
         basePositionMap.Clear();
+        listenerLocalPositionMap.Clear();
+        layerMap.Clear();
+        categoryMap.Clear();
         targetVolumeMap.Clear();
         motionStartTimeMap.Clear();
         motionVolumeFactorMap.Clear();
@@ -211,7 +238,8 @@ public class WebSocketManager : MonoBehaviour
         obj.transform.position = basePosition;
 
         soundObjects[cmd.id] = obj;
-        basePositionMap[cmd.id] = basePosition;
+        StoreBasePosition(cmd.id, cmd, basePosition);
+        StoreSourceMeta(cmd);
         ApplyMotion(cmd.id, cmd.motion);
         targetVolumeMap[cmd.id] = TargetVolume(cmd.volume);
 
@@ -245,7 +273,8 @@ public class WebSocketManager : MonoBehaviour
         }
 
         Vector3 basePosition = CommandPosition(cmd);
-        basePositionMap[cmd.id] = basePosition;
+        StoreBasePosition(cmd.id, cmd, basePosition);
+        StoreSourceMeta(cmd);
 
         if (cmd.motion == null || cmd.motion.type == "none")
         {
@@ -270,6 +299,9 @@ public class WebSocketManager : MonoBehaviour
         }
         motionMap.Remove(id);
         basePositionMap.Remove(id);
+        listenerLocalPositionMap.Remove(id);
+        layerMap.Remove(id);
+        categoryMap.Remove(id);
         targetVolumeMap.Remove(id);
         motionStartTimeMap.Remove(id);
         motionVolumeFactorMap.Remove(id);
@@ -309,9 +341,30 @@ public class WebSocketManager : MonoBehaviour
     {
         if (cmd.position == null || cmd.position.Length < 3)
         {
-            return new Vector3(0f, 0f, 2f);
+            return cmd.relative_to_listener ? MotionPoint(null, Vector3.zero, true) : new Vector3(0f, 0f, 2f);
         }
-        return new Vector3(cmd.position[0], cmd.position[1], cmd.position[2]);
+        Vector3 localOrWorld = new Vector3(cmd.position[0], cmd.position[1], cmd.position[2]);
+        return cmd.relative_to_listener ? MotionPoint(cmd.position, Vector3.zero, true) : localOrWorld;
+    }
+
+    void StoreBasePosition(string id, Command cmd, Vector3 basePosition)
+    {
+        if (cmd.relative_to_listener)
+        {
+            listenerLocalPositionMap[id] = cmd.position != null && cmd.position.Length >= 3
+                ? new Vector3(cmd.position[0], cmd.position[1], cmd.position[2])
+                : Vector3.zero;
+            basePositionMap[id] = basePosition;
+            return;
+        }
+        listenerLocalPositionMap.Remove(id);
+        basePositionMap[id] = basePosition;
+    }
+
+    void StoreSourceMeta(Command cmd)
+    {
+        layerMap[cmd.id] = string.IsNullOrEmpty(cmd.layer) ? cmd.category : cmd.layer;
+        categoryMap[cmd.id] = string.IsNullOrEmpty(cmd.category) ? cmd.layer : cmd.category;
     }
 
     AudioClip LoadClip(string clipPath)
@@ -383,7 +436,7 @@ public class WebSocketManager : MonoBehaviour
 
     void StartRepeatIfNeeded(string id, AudioSource audio, Command cmd)
     {
-        string cfg = $"{cmd.loop}|{cmd.repeat_count}|{cmd.repeat_interval_sec:F3}";
+        string cfg = $"{cmd.segment_id}|{cmd.loop}|{cmd.repeat_count}|{cmd.repeat_interval_sec:F3}";
         bool unchanged = repeatConfigMap.TryGetValue(id, out string prevCfg) && prevCfg == cfg;
         repeatConfigMap[id] = cfg;
 
@@ -393,7 +446,16 @@ public class WebSocketManager : MonoBehaviour
         }
 
         StopRepeat(id);
-        if (cmd.loop || cmd.repeat_count <= 1)
+        if (cmd.loop)
+        {
+            return;
+        }
+
+        audio.Stop();
+        audio.time = 0f;
+        audio.Play();
+
+        if (cmd.repeat_count <= 1)
         {
             return;
         }
@@ -524,10 +586,22 @@ public class WebSocketManager : MonoBehaviour
 
         if (motion.type == "circle" || motion.type == "orbit")
         {
+            Vector3 orbitCenter = MotionPoint(motion.center, center, motion.around_listener || motion.relative_to_listener);
+            if (motion.around_listener || motion.relative_to_listener)
+            {
+                Transform listener = ListenerTransform();
+                if (listener != null)
+                {
+                    float angle = timeSec * speed + phase;
+                    return orbitCenter
+                        + listener.right * (Mathf.Cos(angle) * radius)
+                        + listener.forward * (Mathf.Sin(angle) * radius);
+                }
+            }
             return new Vector3(
-                center.x + Mathf.Cos(timeSec * speed + phase) * radius,
-                center.y,
-                center.z + Mathf.Sin(timeSec * speed + phase) * radius
+                orbitCenter.x + Mathf.Cos(timeSec * speed + phase) * radius,
+                orbitCenter.y,
+                orbitCenter.z + Mathf.Sin(timeSec * speed + phase) * radius
             );
         }
 
@@ -552,7 +626,7 @@ public class WebSocketManager : MonoBehaviour
 
         if (motion.type == "local_random")
         {
-            Vector3 c = VecFromArray(motion.center, center);
+            Vector3 c = MotionPoint(motion.center, center, motion.relative_to_listener);
             float rad = Mathf.Max(0.05f, motion.radius);
             float sx = Mathf.PerlinNoise((id.GetHashCode() & 1023) * 0.01f, timeSec * speed) * 2f - 1f;
             float sz = Mathf.PerlinNoise((id.GetHashCode() & 2047) * 0.01f, timeSec * speed + 13.37f) * 2f - 1f;
@@ -562,16 +636,16 @@ public class WebSocketManager : MonoBehaviour
 
         if (motion.type == "drift")
         {
-            Vector3 start = VecFromArray(motion.start, center);
-            Vector3 end = VecFromArray(motion.end, center);
+            Vector3 start = MotionPoint(motion.start, center, motion.relative_to_listener);
+            Vector3 end = MotionPoint(motion.end, center, motion.relative_to_listener);
             float t = NormalizedProgress(elapsed, motion.duration, motion.repeat);
             return Vector3.Lerp(start, end, t);
         }
 
         if (motion.type == "overhead_pass")
         {
-            Vector3 start = VecFromArray(motion.start, center);
-            Vector3 end = VecFromArray(motion.end, center);
+            Vector3 start = MotionPoint(motion.start, center, motion.relative_to_listener);
+            Vector3 end = MotionPoint(motion.end, center, motion.relative_to_listener);
             int passCount = Mathf.Max(1, motion.pass_count);
             float duration = Mathf.Max(0.01f, motion.duration);
             float t;
@@ -601,9 +675,9 @@ public class WebSocketManager : MonoBehaviour
 
         if (motion.type == "approach_recede")
         {
-            Vector3 start = VecFromArray(motion.start, center);
-            Vector3 mid = VecFromArray(motion.mid, center);
-            Vector3 end = VecFromArray(motion.end, center);
+            Vector3 start = MotionPoint(motion.start, center, motion.relative_to_listener);
+            Vector3 mid = MotionPoint(motion.mid, center, motion.relative_to_listener);
+            Vector3 end = MotionPoint(motion.end, center, motion.relative_to_listener);
             int passCount = Mathf.Max(1, motion.pass_count);
             float duration = Mathf.Max(0.01f, motion.duration);
             float t;
@@ -636,6 +710,52 @@ public class WebSocketManager : MonoBehaviour
         }
 
         return center;
+    }
+
+    Vector3 ListenerPosition()
+    {
+        AudioListener listener = FindObjectOfType<AudioListener>();
+        if (listener != null)
+        {
+            return listener.transform.position;
+        }
+        if (Camera.main != null)
+        {
+            return Camera.main.transform.position;
+        }
+        return Vector3.zero;
+    }
+
+    Transform ListenerTransform()
+    {
+        AudioListener listener = FindObjectOfType<AudioListener>();
+        if (listener != null)
+        {
+            return listener.transform;
+        }
+        if (Camera.main != null)
+        {
+            return Camera.main.transform;
+        }
+        return null;
+    }
+
+    Vector3 MotionPoint(float[] arr, Vector3 fallback, bool relativeToListener)
+    {
+        if (relativeToListener)
+        {
+            Vector3 local = VecFromArray(arr, Vector3.zero);
+            Transform listener = ListenerTransform();
+            if (listener != null)
+            {
+                return listener.position
+                    + listener.right * local.x
+                    + listener.up * local.y
+                    + listener.forward * local.z;
+            }
+            return ListenerPosition() + local;
+        }
+        return VecFromArray(arr, fallback);
     }
 
     float EvaluateMotionVolumeFactor(MotionData motion, string id)
@@ -711,6 +831,20 @@ public class WebSocketManager : MonoBehaviour
             motionVolumeFactorMap[id] = EvaluateMotionVolumeFactor(motion, id);
         }
 
+        foreach (var pair in listenerLocalPositionMap)
+        {
+            string id = pair.Key;
+            if (motionMap.ContainsKey(id))
+            {
+                continue;
+            }
+            if (!soundObjects.TryGetValue(id, out GameObject obj))
+            {
+                continue;
+            }
+            obj.transform.position = MotionPoint(new float[] { pair.Value.x, pair.Value.y, pair.Value.z }, Vector3.zero, true);
+        }
+
         foreach (var pair in soundObjects)
         {
             string id = pair.Key;
@@ -745,6 +879,8 @@ public class WebSocketManager : MonoBehaviour
         UnityRuntimeState state = new UnityRuntimeState();
         state.type = "unity_runtime_state";
         state.time = Time.time;
+        Vector3 listenerPosition = ListenerPosition();
+        state.listener_position = new float[] { listenerPosition.x, listenerPosition.y, listenerPosition.z };
         state.sources = new List<UnityRuntimeSource>();
 
         foreach (var pair in soundObjects)
@@ -764,6 +900,8 @@ public class WebSocketManager : MonoBehaviour
             {
                 id = id,
                 clip = audio != null && audio.clip != null ? audio.clip.name : "",
+                layer = layerMap.ContainsKey(id) ? layerMap[id] : "",
+                category = categoryMap.ContainsKey(id) ? categoryMap[id] : "",
                 position = new float[] { p.x, p.y, p.z },
                 volume = audio != null ? audio.volume : 0f,
                 loop = audio != null && audio.loop,
@@ -844,7 +982,9 @@ public class Command
     public string clip;
     public string layer;
     public string category;
+    public string segment_id;
     public float[] position;
+    public bool relative_to_listener = false;
     public float volume;
     public bool loop;
     public int repeat_count = 1;
@@ -868,6 +1008,8 @@ public class MotionData
     public bool repeat = false;
     public int pass_count = 1;
     public string volume_curve;
+    public bool around_listener = false;
+    public bool relative_to_listener = false;
 }
 
 [Serializable]
@@ -875,6 +1017,7 @@ public class UnityRuntimeState
 {
     public string type;
     public float time;
+    public float[] listener_position;
     public List<UnityRuntimeSource> sources;
 }
 
@@ -883,6 +1026,8 @@ public class UnityRuntimeSource
 {
     public string id;
     public string clip;
+    public string layer;
+    public string category;
     public float[] position;
     public float volume;
     public bool loop;

@@ -91,13 +91,24 @@ const V3NS = (() => {
   let sec=0, phaseIdx=0, playing=false;
   let timerInt=null, mapRAF=null, waveRAF=null;
   let stepInFlight=false;
+  let eegSampleInFlight=false;
   let endingSession=false;
   let lastEEGStep=0;
   let eegMode='{{ eeg_mode or "recorded" }}';
   let userPrompt='';
   let hasRealEEG=false;
   let v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
+  let v3TargetBands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
   let v3BandHistory=[];
+  let eegPlaybackSamples=[];
+  let eegSamplesLoading=false;
+  let sessionStartMs=0;
+  let lastRealtimeSamplePoll=0;
+  let lastPlaybackHistoryAt=-1;
+  let latestMental=null;
+  let latestTrend=null;
+  let latestRecItem=null;
+  let latestWindowMental=null;
 
   /* Navigation */
   function goTo(page) {
@@ -133,7 +144,13 @@ const V3NS = (() => {
         V2.payload = null;
         hasRealEEG = false;
         v3Bands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
+        v3TargetBands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
         v3BandHistory = [];
+        eegPlaybackSamples = [];
+        latestMental = null;
+        latestTrend = null;
+        latestRecItem = null;
+        latestWindowMental = null;
         phaseIdx = 0;
         refreshScene();
         ok = true;
@@ -157,11 +174,19 @@ const V3NS = (() => {
   function initSession() {
     sec=0; phaseIdx=0; playing=true;
     lastEEGStep=0;
+    endingSession=false;
+    sessionStartMs=performance.now();
+    lastPlaybackHistoryAt=-1;
+    latestRecItem = Array.isArray(V2.history) && V2.history.length ? V2.history[V2.history.length-1] : null;
+    latestWindowMental = latestRecItem;
     clearInterval(timerInt);
     refreshScene();
     if (!V2.payload) hasRealEEG=false;
-    renderFromPayload(V2.payload);
+    renderEEGWaiting();
+    loadEEGPlaybackSamples();
+    if (eegMode === 'realtime') refreshEEGSample();
     renderGuidance(0); renderRec(0);
+    if (latestWindowMental) renderMentalFromWindowOutput(latestWindowMental);
     updateSrcs(0);
     startTimer(); scheduleMap(); scheduleWave();
     animateV3UI();
@@ -189,14 +214,14 @@ const V3NS = (() => {
       const el=document.getElementById('v3-timer');
       if (el) el.textContent=`${p2(h)}:${p2(m)}:${p2(s)}`;
       const eegStep=Math.floor(sec/30);
-      const ni=Math.min(3,eegStep);
+      const ni=syncPhaseFromSession();
       if (ni!==phaseIdx) {
         phaseIdx=ni;
         refreshScene();
-        renderFromPayload(V2.payload);
         renderGuidance(ni); renderRec(ni);
         updateSrcs(ni);
       }
+      if (eegMode === 'realtime') refreshEEGSample();
       if (eegStep!==lastEEGStep) {
         lastEEGStep=eegStep;
         processEEGStep();
@@ -204,32 +229,58 @@ const V3NS = (() => {
     },1000);
   }
   function p2(n){return String(n).padStart(2,'0');}
+  function dataDrivenPhaseIdx() {
+    if (eegMode !== 'recorded' || !V2.total || V2.idx < 0) return phaseIdx;
+    const progress = Math.max(0, Math.min(1, (V2.idx + 1) / V2.total));
+    if (progress >= .9) return 3;
+    if (progress >= .6) return 2;
+    if (progress >= .3) return 1;
+    return 0;
+  }
+  function syncPhaseFromSession() {
+    const eegStep=Math.floor(sec/30);
+    return eegMode === 'recorded' ? dataDrivenPhaseIdx() : Math.min(3,eegStep);
+  }
 
   async function togglePlay() {
+    await finishSessionAndRedirect();
+  }
+
+  async function finishSessionAndRedirect() {
     if (endingSession) return;
     endingSession=true;
     playing=false;
+    clearInterval(timerInt);
     const btn=document.getElementById('v3-pp');
     if (btn) btn.textContent='...';
     try {
-      await fetch('/api/end_session', {method:'POST'});
+      await fetch('/api/end_session', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({elapsed_sec:sec})
+      });
     } catch(e) {
       console.warn('V3 end session failed before summary redirect', e);
     } finally {
       window.location.assign('/summary');
     }
   }
+
   async function processEEGStep() {
-    if (stepInFlight) return;
+    if (stepInFlight || endingSession) return;
     stepInFlight=true;
     try {
       const r=await fetch('/api/step', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({direction:'next'})
+        body: JSON.stringify({direction:'next', elapsed_sec:sec})
       });
       const d=await r.json();
       if (r.ok) {
+        if (d.done && eegMode === 'recorded') {
+          await finishSessionAndRedirect();
+          return;
+        }
         if (d.error && !d.current_payload) {
           sEl('v3-rec', eegMode === 'realtime'
             ? 'Waiting for realtime Muse EEG window...\nKeep Muse OSC streaming; the scene will update when a live window arrives.'
@@ -237,15 +288,53 @@ const V3NS = (() => {
           return;
         }
         applyState(d);
-        renderFromPayload(d.current_payload);
+        phaseIdx=syncPhaseFromSession();
+        if (eegMode === 'realtime') renderFromPayload(d.current_payload);
         refreshScene();
         const latest=(d.mental_history||[]).slice(-1)[0];
-        if (latest) renderRecFromMental(latest);
+        if (latest) {
+          renderRecFromMental(latest);
+          renderMentalFromWindowOutput(latest);
+        }
       }
     } catch(e) {
       console.warn('V3 EEG step failed', e);
     } finally {
       stepInFlight=false;
+    }
+  }
+
+  async function refreshEEGSample() {
+    if (eegSampleInFlight || endingSession) return;
+    const now=performance.now();
+    if (now-lastRealtimeSamplePoll < 250) return;
+    lastRealtimeSamplePoll=now;
+    eegSampleInFlight=true;
+    try {
+      const r=await fetch(`/api/eeg_sample?elapsed_sec=${encodeURIComponent(sec)}`, {cache:'no-store'});
+      if (!r.ok) return;
+      const sample=await r.json();
+      renderFromPayload(sample);
+    } catch(e) {
+      console.warn('V3 EEG sample refresh failed', e);
+    } finally {
+      eegSampleInFlight=false;
+    }
+  }
+
+  async function loadEEGPlaybackSamples() {
+    if (eegMode !== 'recorded' || eegSamplesLoading || eegPlaybackSamples.length) return;
+    eegSamplesLoading=true;
+    try {
+      const r=await fetch('/api/eeg_samples', {cache:'no-store'});
+      if (!r.ok) return;
+      const d=await r.json();
+      eegPlaybackSamples=Array.isArray(d.samples) ? d.samples : [];
+      if (eegPlaybackSamples.length) renderFromPayload(eegPlaybackSamples[0], {recordHistory:false, immediate:true});
+    } catch(e) {
+      console.warn('V3 EEG playback preload failed', e);
+    } finally {
+      eegSamplesLoading=false;
     }
   }
 
@@ -358,34 +447,42 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   /* EEG bars */
   const BCOLORS={alpha:'rgba(248,113,113,.8)',beta:'rgba(251,191,36,.8)',theta:'rgba(52,211,153,.8)',delta:'rgba(96,165,250,.8)',gamma:'rgba(167,139,250,.8)'};
   const BLABELS={alpha:'Alpha',beta:'Beta',theta:'Theta',delta:'Delta',gamma:'Gamma'};
+  function ensureBars() {
+    const el=document.getElementById('v3-eeg-bars'); if(!el) return null;
+    if (!el.querySelector('.v3-band-chart')) {
+      el.innerHTML=`<div class="v3-band-chart">${Object.keys(BLABELS).map(k=>`
+        <div class="v3-band-bar">
+          <div class="v3-band-name">${BLABELS[k]}</div>
+          <div class="v3-band-fill" data-band="${k}" data-base="0" style="height:4px;background:${BCOLORS[k]};opacity:.86"></div>
+        </div>`).join('')}</div>`;
+    }
+    return el;
+  }
   function renderBars(bands) {
-    const el=document.getElementById('v3-eeg-bars'); if(!el) return;
-    v3Bands={...v3Bands,...bands};
-    el.innerHTML=`<div class="v3-band-chart">${Object.entries(bands).map(([k,v])=>`
-      <div class="v3-band-bar">
-        <div class="v3-band-name">${BLABELS[k]}</div>
-        <div class="v3-band-fill" data-band="${k}" data-base="${Math.max(.08,Math.min(1,v))}" style="height:${Math.round(Math.max(.08,Math.min(1,v))*66)}px;background:${BCOLORS[k]}"></div>
-      </div>`).join('')}</div>`;
+    if (!ensureBars()) return;
+    v3TargetBands={...v3TargetBands,...bands};
   }
   function renderEEGWaiting() {
-    const el=document.getElementById('v3-eeg-bars'); if(!el) return;
+    const el=ensureBars(); if(!el) return;
     v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
-    el.innerHTML=`<div class="v3-band-chart">${Object.keys(BLABELS).map(k=>`
-      <div class="v3-band-bar">
-        <div class="v3-band-name">${BLABELS[k]}</div>
-        <div class="v3-band-fill" data-band="${k}" data-base="0" style="height:4px;background:${BCOLORS[k]};opacity:.34"></div>
-      </div>`).join('')}</div>`;
+    v3TargetBands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
     sEl('v3-anx-v','--'); sHTML('v3-anx-t','--');
     sEl('v3-att-v','--'); sHTML('v3-att-t','--');
     sEl('v3-stb-v','--'); sHTML('v3-stb-t','--');
   }
   function updateBandBars() {
+    Object.keys(v3TargetBands).forEach(key=>{
+      const cur=Number(v3Bands[key])||0;
+      const target=Number(v3TargetBands[key])||0;
+      v3Bands[key]=cur+(target-cur)*0.14;
+    });
     document.querySelectorAll('#v3-eeg-bars .v3-band-fill').forEach((el,i)=>{
       const key=el.dataset.band;
       const base=normBand(v3Bands[key] ?? Number(el.dataset.base) ?? .2);
       el.style.height=`${Math.round(Math.max(.06,base)*66)}px`;
       el.dataset.base=String(base);
     });
+    if (latestMental && latestTrend) renderMental({mental:latestMental,trend:latestTrend});
   }
 
   /* Mental state cards */
@@ -400,7 +497,59 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     if (!Number.isFinite(n)) return 0;
     return Math.max(0,Math.min(10,n));
   }
-  function renderFromPayload(payload) {
+  function scaledScore(v, low, high) {
+    const n=Number(v);
+    if (!Number.isFinite(n) || high <= low) return 0;
+    return score10(((n-low)/(high-low))*10);
+  }
+  function mentalScoresFromFeatures(f, ruleState) {
+    const attention=score10(f.attention_score);
+    const stability=scaledScore(f.stability_score, 1.5, 8.0);
+    const relaxation=scaledScore(f.relaxation_score, 1.0, 3.5);
+    let anxiety=(10-relaxation)*0.62+(10-stability)*0.28;
+    if (ruleState === 'distracted_or_unstable') anxiety += 1.8;
+    if (ruleState === 'stable_relaxation') anxiety -= 1.2;
+    return {anxiety:score10(anxiety), attention, stability};
+  }
+  function outputScore10(v) {
+    const n=Number(v);
+    if (!Number.isFinite(n)) return 0;
+    if (n <= 1) return score10(n*10);
+    return score10(n);
+  }
+  function anxietyFromWindowOutput(mental) {
+    if (mental.anxiety != null) return outputScore10(mental.anxiety);
+    const relaxation=outputScore10(mental.relaxation);
+    const stability=outputScore10(mental.stability);
+    let anxiety=(10-relaxation)*0.62+(10-stability)*0.28;
+    const state=String(mental.state_label || mental.llm_state || '').toLowerCase();
+    if (state.includes('distracted') || state.includes('unstable')) anxiety += 1.8;
+    if (state.includes('stable_relaxation')) anxiety -= 1.2;
+    return score10(anxiety);
+  }
+  function renderMentalFromWindowOutput(item) {
+    const mental=item?.mental_state || item;
+    if (!mental) return;
+    latestWindowMental=item;
+    const scores={
+      anxiety:anxietyFromWindowOutput(mental),
+      attention:outputScore10(mental.attention),
+      stability:outputScore10(mental.stability),
+    };
+    const trend=String(item.trend || mental.trend || '').toLowerCase();
+    const trendObj={
+      anxiety:trend.includes('decreas') ? 'down' : trend.includes('increas') ? 'up' : 'stable',
+      attention:scores.attention>=5?'up':'down',
+      stability:scores.stability>=5?'up':'down',
+    };
+    latestMental=scores;
+    latestTrend=trendObj;
+    renderMental({
+      mental:scores,
+      trend:trendObj
+    });
+  }
+  function renderFromPayload(payload, opts={}) {
     const f=payload?.current_features;
     if (!f) {
       if (!hasRealEEG) renderEEGWaiting();
@@ -415,28 +564,24 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       gamma:normBand(f.gamma_mean),
     };
     renderBars(bands);
-    const windowId = payload.window_id ?? v3BandHistory.length;
-    if (!v3BandHistory.length || v3BandHistory[v3BandHistory.length-1].window_id !== windowId) {
-      v3BandHistory.push({window_id: windowId, time_range_sec: payload.time_range_sec, bands});
-      if (v3BandHistory.length > 80) v3BandHistory = v3BandHistory.slice(-80);
-    } else {
-      v3BandHistory[v3BandHistory.length-1] = {window_id: windowId, time_range_sec: payload.time_range_sec, bands};
-    }
-    const attention=score10(f.attention_score);
-    const stability=score10(f.stability_score);
-    const relaxation=score10(f.relaxation_score);
-    renderMental({
-      mental:{
-        anxiety:score10(10-relaxation),
-        attention,
-        stability,
-      },
-      trend:{
-        anxiety:payload.current_rule_state==='distracted_or_unstable'?'up':'stable',
-        attention:attention>=5?'up':'down',
-        stability:stability>=5?'up':'down',
+    if (opts.immediate) v3Bands={...v3Bands,...bands};
+    if (opts.recordHistory !== false) {
+      const windowId = payload.window_id ?? payload.time_sec ?? v3BandHistory.length;
+      if (!v3BandHistory.length || v3BandHistory[v3BandHistory.length-1].window_id !== windowId) {
+        v3BandHistory.push({window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands});
+        if (v3BandHistory.length > 80) v3BandHistory = v3BandHistory.slice(-80);
+      } else {
+        v3BandHistory[v3BandHistory.length-1] = {window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands};
       }
-    });
+    }
+    if (latestWindowMental) return;
+    latestMental=mentalScoresFromFeatures(f, payload.current_rule_state);
+    latestTrend={
+      anxiety:payload.current_rule_state==='distracted_or_unstable'?'up':'stable',
+      attention:latestMental.attention>=5?'up':'down',
+      stability:latestMental.stability>=5?'up':'down',
+    };
+    renderMental({mental:latestMental,trend:latestTrend});
   }
   function renderMental({mental,trend}) {
     sEl('v3-anx-v',mental.anxiety.toFixed(1));   sHTML('v3-anx-t',TMAP[trend.anxiety]  ||'--');
@@ -446,19 +591,63 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   function sEl(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
   function sHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h;}
   function renderGuidance(i){sEl('v3-guidance',V2.scene?.narration_script || GUIDANCE[i] || GUIDANCE[0]);}
-  function renderRec(i){sEl('v3-rec',RECS[i]||RECS[0]);}
+  function renderRec(i){
+    if (latestRecItem) {
+      renderRecFromMental(latestRecItem);
+      return;
+    }
+    sEl('v3-rec',RECS[i]||RECS[0]);
+  }
   function renderRecFromMental(item) {
+    if (!item) return;
+    latestRecItem=item;
     sEl('v3-rec',`EEG window ${item.window_id ?? '?'}\nstate: ${item.llm_state || item.rule_state || 'unknown'}\ntrend: ${item.trend || 'stable'}\nconfidence: ${item.confidence != null ? Number(item.confidence).toFixed(2) : '--'}`);
+  }
+  function playbackElapsedSec() {
+    return sessionStartMs ? Math.max(0,(performance.now()-sessionStartMs)/1000) : sec;
+  }
+  function playbackSampleAt(t) {
+    const samples=eegPlaybackSamples;
+    if (!samples.length) return null;
+    if (t <= Number(samples[0].time_sec||0)) return samples[0];
+    let lo=0, hi=samples.length-1;
+    while (lo < hi) {
+      const mid=Math.floor((lo+hi)/2);
+      if (Number(samples[mid].time_sec||0) < t) lo=mid+1;
+      else hi=mid;
+    }
+    const a=samples[Math.max(0,lo-1)], b=samples[lo];
+    if (!a || !b) return b || a;
+    return Math.abs(t-Number(a.time_sec||0)) <= Math.abs(Number(b.time_sec||0)-t) ? a : b;
+  }
+  function updateEEGPlaybackFrame() {
+    if (eegMode !== 'recorded' || !playing || endingSession || !eegPlaybackSamples.length) return;
+    const t=playbackElapsedSec();
+    const sample=playbackSampleAt(t);
+    if (!sample) return;
+    const historyKey=Math.floor(t*4);
+    renderFromPayload(sample, {recordHistory: historyKey!==lastPlaybackHistoryAt});
+    lastPlaybackHistoryAt=historyKey;
   }
 
   /* Spatial sources */
   function updateSrcs(pi) {
     SRCS.forEach((s,i)=>{ s.on = i<(pi===0?0:pi===1?2:3); });
   }
+  function sourceLayer(src) {
+    return String(src?.category || src?.layer || '').toLowerCase();
+  }
+  function shouldShowSource(src, hasRuntime) {
+    const layer=sourceLayer(src);
+    if (layer.includes('event')) return hasRuntime && !!src.isActive;
+    return true;
+  }
   function currentUnitySources() {
     const freshRuntime=freshUnityRuntime(V2.unityRuntime);
-    const sources=renderableSources(V2.scene, freshRuntime, V2.unityCommands);
-    return freshRuntime ? sources : animateV3Sources(sources);
+    const hasRuntime=!!freshRuntime;
+    const sources=renderableSources(V2.scene, freshRuntime, V2.unityCommands)
+      .filter(src=>shouldShowSource(src, hasRuntime));
+    return hasRuntime ? sources : animateV3Sources(sources);
   }
   function idSeed(id) {
     if (v3MotionSeed[id] != null) return v3MotionSeed[id];
@@ -470,6 +659,12 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   function withPosShape(original, x, y, z) {
     if (Array.isArray(original)) return [x,y,z];
     return {x,y,z};
+  }
+  function motionCenterXZ(motion, fallbackX, fallbackZ) {
+    const c=motion?.center;
+    if (Array.isArray(c)) return {x:Number(c[0])||0,z:Number(c[2])||0};
+    if (c && typeof c==='object') return {x:Number(c.x)||0,z:Number(c.z)||0};
+    return {x:fallbackX,z:fallbackZ};
   }
   function animateV3Sources(sources) {
     const t=performance.now()/1000;
@@ -484,8 +679,9 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
         const speed=Math.max(.04,Number(motion.speed)||.22);
         const radius=Math.max(.25,Number(motion.radius)||1.2);
         const phase=seed*Math.PI*2;
-        nx=x+Math.cos(t*speed+phase)*radius;
-        nz=z+Math.sin(t*speed+phase)*radius;
+        const c=motionCenterXZ(motion,x,z);
+        nx=c.x+Math.cos(t*speed+phase)*radius;
+        nz=c.z+Math.sin(t*speed+phase)*radius;
       } else if (motion.type==='breathing') {
         const speed=Math.max(.04,Number(motion.speed)||.2);
         const minR=Number(motion.minRadius)||.4;
@@ -500,10 +696,18 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       return {...src,position:withPosShape(src.position,nx,y,nz),isActive:true};
     });
   }
-  function sourceCanvasPoint(position, cx, cy, rO) {
+  function listenerXZ() {
+    const rt=freshUnityRuntime(V2.unityRuntime);
+    const p=rt?.listener_position || rt?.listenerPosition || rt?.camera_position || rt?.cameraPosition;
+    if (Array.isArray(p)) return {x:Number(p[0])||0,z:Number(p[2])||0};
+    if (p && typeof p==='object') return {x:Number(p.x)||0,z:Number(p.z)||0};
+    return {x:0,z:0};
+  }
+  function sourceCanvasPoint(position, cx, cy, rO, relativeToListener=false) {
     const {x,z}=srcXZ(position);
-    const nx=Math.max(-1,Math.min(1,x/MAX_D));
-    const nz=Math.max(-1,Math.min(1,z/MAX_D));
+    const listener=relativeToListener ? listenerXZ() : {x:0,z:0};
+    const nx=Math.max(-1,Math.min(1,(x-listener.x)/MAX_D));
+    const nz=Math.max(-1,Math.min(1,(z-listener.z)/MAX_D));
     return {x:cx+nx*rO, y:cy-nz*rO};
   }
   function drawSourceLabel(ctx, id, x, y, sz) {}
@@ -517,7 +721,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     sources.forEach((src,i)=>{
       const id=src.id||String(i);
       seen.add(id);
-      const p=sourceCanvasPoint(src.position,cx,cy,rO);
+      const p=sourceCanvasPoint(src.position,cx,cy,rO,!!freshUnityRuntime(V2.unityRuntime));
       const volume=clamp01(src.volume);
       const isActive=!!src.isActive;
       const color=REAL_COLORS[i%REAL_COLORS.length];
@@ -708,6 +912,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     const W=dims.w,H=dims.h,mid=H/2,sc=H*.38;
     ctx.setTransform(dims.dpr,0,0,dims.dpr,0,0);
     ctx.clearRect(0,0,W,H);
+    updateEEGPlaybackFrame();
     updateBandBars();
     if (!hasRealEEG) {
       ctx.fillStyle='rgba(255,255,255,.34)';

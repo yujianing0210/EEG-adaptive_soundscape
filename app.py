@@ -1,12 +1,25 @@
 from __future__ import annotations
 import json
+import os
+from bisect import bisect_left
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from dotenv import load_dotenv
 
-from scripts.eeg_pipeline import run_pipeline, save_windows, DEFAULT_EEG_FILE, WINDOW_SEC, STEP_SEC
+from scripts.eeg_pipeline import (
+    run_pipeline,
+    save_windows,
+    load_data,
+    filter_good_signal,
+    create_band_averages,
+    add_motion_features,
+    classify_state,
+    DEFAULT_EEG_FILE,
+    WINDOW_SEC,
+    STEP_SEC,
+)
 from scripts.scene_logic import bootstrap_scene, interpret_window, adapt_scene
 from lib.mock_sound_library import load_audio_library
 from translator import scene_to_commands
@@ -15,11 +28,12 @@ from muse_realtime import (
     pop_realtime_payload,
     get_realtime_payload_history,
     get_realtime_diagnostics,
+    get_latest_realtime_sample,
     start_realtime_session,
     stop_realtime_session,
 )
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(".env"))
 
 app = Flask(__name__, template_folder="ui/templates", static_folder="ui/static")
 app.secret_key = "dev-key"
@@ -36,6 +50,10 @@ STATE: Dict[str, Any] = {
     "last_summary_at": None,
     "session_ended": False,
     "dashboard_summary": None,
+    "eeg_file": DEFAULT_EEG_FILE,
+    "eeg_samples": [],
+    "eeg_sample_times": [],
+    "eeg_sample_file": None,
 }
 
 OUTPUTS = Path("outputs")
@@ -69,18 +87,134 @@ def clear_session_outputs():
                     app.logger.warning("Could not remove stale output %s: %s", path, exc)
 
 
+def current_recorded_eeg_config() -> tuple[str, int, int]:
+    """Read recorded EEG config at action time so .env edits take effect."""
+    load_dotenv(dotenv_path=Path(".env"), override=True)
+    eeg_file = os.getenv("EEG_FILE", DEFAULT_EEG_FILE)
+    window_sec = int(os.getenv("WINDOW_SEC", WINDOW_SEC))
+    step_sec = int(os.getenv("STEP_SEC", STEP_SEC))
+    STATE["eeg_file"] = eeg_file
+    return eeg_file, window_sec, step_sec
+
+
 def ensure_windows():
     if STATE["windows"]:
         return
-    df, payloads = run_pipeline(file_path=DEFAULT_EEG_FILE, window_sec=WINDOW_SEC, step_sec=STEP_SEC, strict_hsi=True)
+    eeg_file, window_sec, step_sec = current_recorded_eeg_config()
+    df, payloads = run_pipeline(file_path=eeg_file, window_sec=window_sec, step_sec=step_sec, strict_hsi=True)
     save_windows(df, payloads, outputs_dir=str(OUTPUTS))
     STATE["windows"] = payloads
+
+
+def _json_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if n != n or n in (float("inf"), float("-inf")):
+        return fallback
+    return n
+
+
+def _build_eeg_samples() -> None:
+    eeg_file, _, _ = current_recorded_eeg_config()
+    if STATE.get("eeg_samples") and STATE.get("eeg_sample_file") == eeg_file:
+        return
+
+    df = load_data(eeg_file)
+    df = filter_good_signal(df, strict=False)
+    df = create_band_averages(df)
+    df = add_motion_features(df)
+
+    bands = ["Delta", "Theta", "Alpha", "Beta", "Gamma"]
+    eps = 1e-8
+    rolling_std = df[bands].rolling(window=12, min_periods=2).std().mean(axis=1)
+    samples = []
+    times = []
+    for idx, row in df.iterrows():
+        alpha = _json_float(row.get("Alpha"))
+        beta = _json_float(row.get("Beta"))
+        theta = _json_float(row.get("Theta"))
+        delta = _json_float(row.get("Delta"))
+        gamma = _json_float(row.get("Gamma"))
+        variance = _json_float(rolling_std.loc[idx], 0.15)
+        features = {
+            "delta_mean": delta,
+            "theta_mean": theta,
+            "alpha_mean": alpha,
+            "beta_mean": beta,
+            "gamma_mean": gamma,
+            "alpha_beta_ratio": alpha / (beta + eps),
+            "theta_beta_ratio": theta / (beta + eps),
+            "relaxation_score": alpha / (beta + eps),
+            "attention_score": 1 / ((theta / (beta + eps)) + eps),
+            "stability_score": 1 / (variance + eps),
+        }
+        if "acc_mag" in row:
+            features["acc_mean"] = _json_float(row.get("acc_mag"))
+        if "gyro_mag" in row:
+            features["gyro_mean"] = _json_float(row.get("gyro_mag"))
+        if "Heart_Rate" in row:
+            features["heart_rate_mean"] = _json_float(row.get("Heart_Rate"), None)
+        try:
+            state = classify_state(features)
+        except Exception:
+            state = "unknown"
+        t = _json_float(row.get("time_sec"))
+        times.append(t)
+        samples.append({
+            "time_sec": t,
+            "current_features": features,
+            "current_rule_state": state,
+            "source": "recorded_csv_sample",
+        })
+
+    STATE["eeg_samples"] = samples
+    STATE["eeg_sample_times"] = times
+    STATE["eeg_sample_file"] = eeg_file
+
+
+def _eeg_sample_at(elapsed_sec: float) -> Optional[dict]:
+    _build_eeg_samples()
+    samples = STATE.get("eeg_samples") or []
+    times = STATE.get("eeg_sample_times") or []
+    if not samples or not times:
+        return None
+    t = max(0.0, float(elapsed_sec))
+    idx = bisect_left(times, t)
+    if idx <= 0:
+        return samples[0]
+    if idx >= len(samples):
+        return samples[-1]
+    prev_t = times[idx - 1]
+    next_t = times[idx]
+    return samples[idx - 1] if abs(t - prev_t) <= abs(next_t - t) else samples[idx]
 
 
 def write_json(obj: Any, name: str):
     OUTPUTS.mkdir(exist_ok=True)
     with open(OUTPUTS / name, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
+
+
+def _mental_history_item(payload: dict, mental: dict, next_idx: int, session_elapsed_sec: Optional[int] = None) -> dict:
+    elapsed = session_elapsed_sec if session_elapsed_sec is not None else next_idx * SESSION_PLAYBACK_STEP_SEC
+    return {
+        "window_id": payload.get("window_id"),
+        "rule_state": payload.get("current_rule_state"),
+        "llm_state": mental.get("state_label"),
+        "trend": mental.get("trend"),
+        "confidence": mental.get("confidence"),
+        "attention": mental.get("attention"),
+        "relaxation": mental.get("relaxation"),
+        "stability": mental.get("stability"),
+        "anxiety": mental.get("anxiety"),
+        "mind_wandering_risk": mental.get("mind_wandering_risk"),
+        "interpretation": mental.get("interpretation"),
+        "scene_implication": mental.get("scene_implication"),
+        "mental_state": mental,
+        "session_elapsed_sec": elapsed,
+    }
 
 
 def _read_runtime_state() -> Optional[dict]:
@@ -138,21 +272,53 @@ def _audio_snapshot(scene: Optional[dict], idx: int) -> dict:
     }
 
 
-def _build_dashboard_summary() -> dict:
+SESSION_PLAYBACK_STEP_SEC = 30
+
+
+def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
     windows = STATE.get("windows") or []
     current_idx = STATE.get("current_idx", -1)
     processed_windows = windows[: current_idx + 1] if current_idx >= 0 else []
     mental_history = STATE.get("mental_history") or []
     scene_history = STATE.get("scene_history") or []
+    _, _, configured_step_sec = current_recorded_eeg_config()
+
+    def _payload_time_start(payload: dict, idx: int) -> int:
+        time_range = payload.get("time_range_sec") or []
+        if len(time_range) >= 1:
+            try:
+                return int(round(float(time_range[0])))
+            except (TypeError, ValueError):
+                pass
+        return idx * configured_step_sec
+
+    def _payload_time_end(payload: dict, fallback_start: int) -> int:
+        time_range = payload.get("time_range_sec") or []
+        if len(time_range) >= 2:
+            try:
+                return int(round(float(time_range[1])))
+            except (TypeError, ValueError):
+                pass
+        return fallback_start + configured_step_sec
 
     timeline = []
     for idx, payload in enumerate(processed_windows):
         features = payload.get("current_features", {}) or {}
         mental = mental_history[idx] if idx < len(mental_history) else {}
         scene = scene_history[idx + 1] if idx + 1 < len(scene_history) else STATE.get("scene")
+        raw_csv_start = _payload_time_start(payload, idx)
+        raw_csv_end = _payload_time_end(payload, raw_csv_start)
+        try:
+            start_sec = int(round(float(mental.get("session_elapsed_sec"))))
+        except (TypeError, ValueError):
+            start_sec = idx * SESSION_PLAYBACK_STEP_SEC
+        end_sec = start_sec + SESSION_PLAYBACK_STEP_SEC
         timeline.append({
             "step": idx,
-            "time_sec": idx * 30,
+            "time_sec": start_sec,
+            "end_sec": end_sec,
+            "csv_time_sec": raw_csv_start,
+            "csv_end_sec": raw_csv_end,
             "window_id": payload.get("window_id", idx),
             "time_range_sec": payload.get("time_range_sec"),
             "rule_state": payload.get("current_rule_state"),
@@ -176,19 +342,13 @@ def _build_dashboard_summary() -> dict:
             "audio": _audio_snapshot(scene, idx),
         })
 
-    if not timeline and STATE.get("scene"):
-        timeline.append({
-            "step": 0,
-            "time_sec": 0,
-            "window_id": None,
-            "rule_state": None,
-            "llm_state": None,
-            "trend": None,
-            "confidence": None,
-            "bands": {},
-            "scores": {},
-            "audio": _audio_snapshot(STATE.get("scene"), 0),
-        })
+    for idx, item in enumerate(timeline):
+        if idx + 1 < len(timeline):
+            item["end_sec"] = max(item["time_sec"], timeline[idx + 1]["time_sec"])
+
+    if ended_elapsed_sec is not None and timeline:
+        ended_elapsed_sec = max(0, int(ended_elapsed_sec))
+        timeline[-1]["end_sec"] = max(timeline[-1]["time_sec"], ended_elapsed_sec)
 
     state_counts: Dict[str, int] = {}
     for item in timeline:
@@ -215,13 +375,31 @@ def _build_dashboard_summary() -> dict:
         "prompt": STATE.get("prompt"),
         "scene_type": (STATE.get("scene") or {}).get("scene_type"),
         "ended_at": __import__("time").time(),
-        "duration_sec": timeline[-1]["time_sec"] if timeline else 0,
-        "sample_interval_sec": 30,
+        "duration_sec": ended_elapsed_sec if ended_elapsed_sec is not None else (timeline[-1].get("end_sec", timeline[-1]["time_sec"]) if timeline else 0),
+        "sample_interval_sec": SESSION_PLAYBACK_STEP_SEC,
+        "csv_step_sec": configured_step_sec,
         "window_count": len(timeline),
         "state_counts": state_counts,
         "timeline": timeline,
         "audio_tracks": list(audio_tracks.values()),
         "runtime": _read_runtime_state(),
+    }
+
+
+def _empty_dashboard_summary(reason: str = "No processed EEG windows are available yet.") -> dict:
+    return {
+        "prompt": STATE.get("prompt"),
+        "scene_type": (STATE.get("scene") or {}).get("scene_type"),
+        "ended_at": None,
+        "duration_sec": 0,
+        "sample_interval_sec": STEP_SEC,
+        "window_count": 0,
+        "state_counts": {},
+        "timeline": [],
+        "audio_tracks": [],
+        "runtime": _read_runtime_state(),
+        "no_data": True,
+        "reason": reason,
     }
 
 
@@ -267,7 +445,7 @@ def _summary_state_label(item: dict) -> str:
 def _load_dashboard_summary() -> dict:
     if STATE.get("dashboard_summary"):
         return STATE["dashboard_summary"]
-    if STATE.get("prompt") and not STATE.get("session_ended"):
+    if STATE.get("prompt") and not STATE.get("session_ended") and STATE.get("current_idx", -1) >= 0:
         return _build_dashboard_summary()
     summary_file = OUTPUTS / "session_dashboard_summary.json"
     if summary_file.exists():
@@ -275,20 +453,49 @@ def _load_dashboard_summary() -> dict:
             with open(summary_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            return _build_dashboard_summary()
-    return _build_dashboard_summary()
+            return _empty_dashboard_summary("Saved session summary could not be loaded.")
+    return _empty_dashboard_summary()
 
 
 def _dashboard_to_session_summary(summary: dict) -> dict:
-    timeline = summary.get("timeline") or []
-    sample_interval = int(summary.get("sample_interval_sec") or 30)
+    timeline = [
+        item for item in (summary.get("timeline") or [])
+        if item.get("window_id") is not None and item.get("scores")
+    ]
+    if not timeline:
+        return {
+            "no_data": True,
+            "reason": summary.get("reason") or "No processed EEG windows are available yet.",
+            "session": {
+                "duration_sec": 0,
+                "prompt": summary.get("prompt"),
+                "scene_type": summary.get("scene_type"),
+            },
+            "metrics": {
+                "average_attention": 0,
+                "average_relaxation": 0,
+                "average_stability": 0,
+            },
+            "ai_summary": summary.get("reason") or "No session summary is available yet.",
+            "mental_timeline": [],
+            "audio_events": [],
+            "audio_timeline": [],
+            "audio_composition": {
+                "ambient": 0,
+                "event": 0,
+                "action": 0,
+            },
+            "top_audio_elements": [],
+            "insight": "Process at least one EEG window before opening the summary.",
+        }
+    sample_interval = int(summary.get("sample_interval_sec") or STEP_SEC)
     duration = int(summary.get("duration_sec") or 0)
     if timeline:
         last = timeline[-1]
-        time_range = last.get("time_range_sec") or []
-        if len(time_range) >= 2:
-            duration = max(duration, int(float(time_range[1])))
-        duration = max(duration, int(last.get("time_sec") or 0) + sample_interval)
+        if last.get("end_sec") is not None:
+            duration = max(duration, int(last.get("end_sec") or 0))
+        else:
+            duration = max(duration, int(last.get("time_sec") or 0) + sample_interval)
     duration = max(duration, sample_interval if timeline else 0)
 
     mental_timeline = []
@@ -308,6 +515,7 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
             stability_values.append(stability)
         mental_timeline.append({
             "time_sec": int(item.get("time_sec") or 0),
+            "end_sec": int(item.get("end_sec") or item.get("time_sec") or 0),
             "attention": attention if attention is not None else 0,
             "relaxation": relaxation if relaxation is not None else 0,
             "stability": stability if stability is not None else 0,
@@ -323,7 +531,7 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
         if idx + 1 < len(timeline):
             end = int(timeline[idx + 1].get("time_sec") or (start + sample_interval))
         else:
-            end = max(duration, start + sample_interval)
+            end = int(item.get("end_sec") or max(duration, start + sample_interval))
         sources = (item.get("audio") or {}).get("sources") or []
         current_active = set()
         for source in sources:
@@ -397,6 +605,16 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
     first_state = timeline[0].get("llm_state") or timeline[0].get("rule_state") if timeline else "the opening state"
     last_state = timeline[-1].get("llm_state") or timeline[-1].get("rule_state") if timeline else "the closing state"
     top_names = ", ".join(item["label"].lower() for item in top_audio[:2]) or "the active soundscape"
+    if first_state == last_state:
+        ai_summary = (
+            f"Across {len(timeline)} EEG window(s), your interpreted state remained "
+            f"{last_state}, while the system adapted the soundscape in response."
+        )
+    else:
+        ai_summary = (
+            f"Across {len(timeline)} EEG window(s), your interpreted state moved from "
+            f"{first_state} toward {last_state}, while the system adapted the soundscape in response."
+        )
 
     return {
         "session": {
@@ -409,10 +627,7 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
             "average_relaxation": _mean_int(relaxation_values),
             "average_stability": _mean_int(stability_values),
         },
-        "ai_summary": (
-            f"Across {len(timeline)} EEG window(s), your interpreted state moved from "
-            f"{first_state} toward {last_state}, while the system adapted the soundscape in response."
-        ),
+        "ai_summary": ai_summary,
         "mental_timeline": mental_timeline,
         "audio_events": audio_events[:6],
         "audio_timeline": merged_audio,
@@ -533,6 +748,14 @@ def update_realtime_summary_if_due():
         "llm_state": mental.get("state_label"),
         "trend": mental.get("trend"),
         "confidence": mental.get("confidence"),
+        "attention": mental.get("attention"),
+        "relaxation": mental.get("relaxation"),
+        "stability": mental.get("stability"),
+        "anxiety": mental.get("anxiety"),
+        "mind_wandering_risk": mental.get("mind_wandering_risk"),
+        "interpretation": mental.get("interpretation"),
+        "scene_implication": mental.get("scene_implication"),
+        "mental_state": mental,
         "auto_summary": True,
     })
 
@@ -554,7 +777,7 @@ def index():
         total_windows=len(STATE["windows"]),
         current_payload=current_payload,
         mental_history=STATE["mental_history"],
-        eeg_path=DEFAULT_EEG_FILE,
+        eeg_path=STATE.get("eeg_file") or current_recorded_eeg_config()[0],
         eeg_mode=STATE["eeg_mode"],
         realtime_active=STATE["realtime_active"],
     )
@@ -589,6 +812,10 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
     STATE["last_summary_at"] = None
     STATE["session_ended"] = False
     STATE["dashboard_summary"] = None
+    STATE["eeg_file"] = current_recorded_eeg_config()[0]
+    STATE["eeg_samples"] = []
+    STATE["eeg_sample_times"] = []
+    STATE["eeg_sample_file"] = None
 
     if eeg_mode == "realtime":
         scene = bootstrap_scene(user_prompt)
@@ -607,7 +834,8 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
         return scene
 
     # refresh EEG windows from pre-recorded CSV
-    df, payloads = run_pipeline(file_path=DEFAULT_EEG_FILE, window_sec=WINDOW_SEC, step_sec=STEP_SEC, strict_hsi=True)
+    eeg_file, window_sec, step_sec = current_recorded_eeg_config()
+    df, payloads = run_pipeline(file_path=eeg_file, window_sec=window_sec, step_sec=step_sec, strict_hsi=True)
     save_windows(df, payloads, outputs_dir=str(OUTPUTS))
 
     scene = bootstrap_scene(user_prompt)
@@ -693,13 +921,7 @@ def step_scene():
     STATE["scene_history"].append(updated_scene)
     STATE["current_idx"] = next_idx
     STATE["current_payload"] = payload
-    STATE["mental_history"].append({
-        "window_id": payload.get("window_id"),
-        "rule_state": payload.get("current_rule_state"),
-        "llm_state": mental.get("state_label"),
-        "trend": mental.get("trend"),
-        "confidence": mental.get("confidence"),
-    })
+    STATE["mental_history"].append(_mental_history_item(payload, mental, next_idx))
 
     flash(f"Processed window {next_idx}.")
     return redirect(url_for("index"))
@@ -764,6 +986,10 @@ def _state_snapshot():
 def api_step():
     data = request.get_json(silent=True) or {}
     direction = data.get("direction", "next")
+    try:
+        session_elapsed_sec = int(round(float(data.get("elapsed_sec"))))
+    except (TypeError, ValueError):
+        session_elapsed_sec = None
 
     if not STATE["scene"]:
         return jsonify({"error": "Run bootstrap first."}), 400
@@ -805,13 +1031,7 @@ def api_step():
     STATE["scene"] = updated_scene
     STATE.setdefault("scene_history", []).append(updated_scene)
     STATE["current_idx"] = next_idx
-    STATE["mental_history"].append({
-        "window_id": payload.get("window_id"),
-        "rule_state": payload.get("current_rule_state"),
-        "llm_state": mental.get("state_label"),
-        "trend": mental.get("trend"),
-        "confidence": mental.get("confidence"),
-    })
+    STATE["mental_history"].append(_mental_history_item(payload, mental, next_idx, session_elapsed_sec))
 
     return jsonify(_state_snapshot())
 
@@ -819,6 +1039,52 @@ def api_step():
 @app.get("/api/state")
 def api_state():
     return jsonify(_state_snapshot())
+
+
+@app.get("/api/eeg_sample")
+def api_eeg_sample():
+    if STATE.get("eeg_mode") == "realtime":
+        sample = get_latest_realtime_sample()
+        if sample is None:
+            return jsonify({"error": "No realtime EEG sample is available yet."}), 404
+        return jsonify(sample)
+
+    try:
+        elapsed_sec = float(request.args.get("elapsed_sec", 0))
+    except (TypeError, ValueError):
+        elapsed_sec = 0.0
+    try:
+        sample = _eeg_sample_at(elapsed_sec)
+    except Exception as exc:
+        return jsonify({"error": f"Could not load EEG playback sample: {exc}"}), 500
+    if sample is None:
+        return jsonify({"error": "No EEG samples are available."}), 404
+    return jsonify(sample)
+
+
+@app.get("/api/eeg_samples")
+def api_eeg_samples():
+    if STATE.get("eeg_mode") == "realtime":
+        return jsonify({"samples": [], "mode": "realtime"})
+    try:
+        _build_eeg_samples()
+    except Exception as exc:
+        return jsonify({"error": f"Could not load EEG playback samples: {exc}"}), 500
+    samples = STATE.get("eeg_samples") or []
+    compact = []
+    last_t = -999.0
+    for sample in samples:
+        t = _json_float(sample.get("time_sec"), 0.0)
+        if t - last_t >= 0.05:
+            compact.append(sample)
+            last_t = t
+    if samples and (not compact or compact[-1] is not samples[-1]):
+        compact.append(samples[-1])
+    return jsonify({
+        "samples": compact,
+        "mode": "recorded",
+        "sample_interval_sec": 0.05,
+    })
 
 
 @app.get("/summary")
@@ -833,7 +1099,12 @@ def api_session_summary():
 
 @app.post("/api/end_session")
 def api_end_session():
-    summary = _build_dashboard_summary()
+    data = request.get_json(silent=True) or {}
+    try:
+        ended_elapsed_sec = int(round(float(data.get("elapsed_sec"))))
+    except (TypeError, ValueError):
+        ended_elapsed_sec = None
+    summary = _build_dashboard_summary(ended_elapsed_sec=ended_elapsed_sec)
     stop_realtime_session()
 
     stopped_scene = _make_stopped_scene(STATE.get("scene"))

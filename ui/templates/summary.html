@@ -652,6 +652,18 @@
       event: "#e6a64d",
       action: "#a56cf0"
     };
+    const EMPTY_SUMMARY_DATA = {
+      no_data: true,
+      session: { duration_sec: 0 },
+      metrics: { average_attention: 0, average_relaxation: 0, average_stability: 0 },
+      ai_summary: "No processed EEG windows are available yet.",
+      mental_timeline: [],
+      audio_events: [],
+      audio_timeline: [],
+      audio_composition: { ambient: 0, event: 0, action: 0 },
+      top_audio_elements: [],
+      insight: "Process at least one EEG window before opening the summary."
+    };
 
     document.addEventListener("DOMContentLoaded", async () => {
       const data = await loadSummaryData();
@@ -663,20 +675,14 @@
         const summaryRes = await fetch("/api/session_summary", { cache: "no-store" });
         if (summaryRes.ok) {
           const data = await summaryRes.json();
-          if (data && Array.isArray(data.mental_timeline) && data.mental_timeline.length) {
+          if (data && (data.no_data || Array.isArray(data.mental_timeline))) {
             return data;
           }
         }
-
-        const unityRes = await fetch("/api/unity_state", { cache: "no-store" });
-        const stateRes = await fetch("/api/state", { cache: "no-store" });
-        if (!unityRes.ok || !stateRes.ok) return DEMO_SUMMARY_DATA;
-        const unity = await unityRes.json();
-        const state = await stateRes.json();
-        return buildSummaryFromExistingState(unity, state);
+        return EMPTY_SUMMARY_DATA;
       } catch (err) {
-        console.warn("Using demo summary data because live state could not be loaded:", err);
-        return DEMO_SUMMARY_DATA;
+        console.warn("No real summary data could be loaded:", err);
+        return EMPTY_SUMMARY_DATA;
       }
     }
 
@@ -686,14 +692,19 @@
       const hist = Array.isArray(state.mental_history) ? state.mental_history : [];
       const scene = unity.scene || state.scene || {};
       const sources = Array.isArray(scene.sources) ? scene.sources : [];
-      const duration = Math.max(300, (state.total_windows || hist.length || 5) * 30);
+      const stepSec = Number(payload?.step_sec) || 20;
+      const duration = Math.max(
+        Number(payload?.time_range_sec?.[1]) || 0,
+        (state.current_idx != null && state.current_idx >= 0 ? state.current_idx + 1 : hist.length || 1) * stepSec,
+        stepSec
+      );
 
-      if (!payload && !sources.length && !hist.length) return DEMO_SUMMARY_DATA;
+      if (!payload && !sources.length && !hist.length) return EMPTY_SUMMARY_DATA;
 
       const baseAttention = scaleFeature(features.attention_score, 72);
       const baseRelaxation = scaleFeature(features.relaxation_score, 78);
       const baseStability = scaleFeature(features.stability_score, 65);
-      const points = makeTimelineFromHistory(hist, duration, baseAttention, baseRelaxation, baseStability);
+      const points = makeTimelineFromHistory(hist, duration, baseAttention, baseRelaxation, baseStability, stepSec);
       const audioTimeline = makeAudioTimeline(sources, duration);
       const composition = makeComposition(audioTimeline);
       const topAudio = makeTopAudio(audioTimeline);
@@ -722,17 +733,15 @@
       return clamp(Math.round(n), 0, 100);
     }
 
-    function makeTimelineFromHistory(history, duration, att, rel, stab) {
+    function makeTimelineFromHistory(history, duration, att, rel, stab, stepSec = 20) {
       if (!history.length) {
-        return DEMO_SUMMARY_DATA.mental_timeline.map(p => ({
-          ...p,
-          time_sec: Math.round(p.time_sec / DEMO_SUMMARY_DATA.session.duration_sec * duration)
-        }));
+        return [];
       }
       const count = Math.max(history.length, 3);
       return Array.from({ length: count }, (_, i) => {
         const h = history[i] || {};
-        const t = Math.round(i * duration / Math.max(1, count - 1));
+        const windowId = Number.isFinite(Number(h.window_id)) ? Number(h.window_id) : i;
+        const t = Math.min(duration, Math.round(windowId * stepSec));
         const state = String(h.llm_state || h.rule_state || "").toLowerCase();
         const progress = count === 1 ? 1 : i / (count - 1);
         return {
@@ -746,7 +755,7 @@
     }
 
     function makeAudioTimeline(sources, duration) {
-      if (!sources.length) return DEMO_SUMMARY_DATA.audio_timeline;
+      if (!sources.length) return [];
       const byLayer = { ambient: [], event: [], action: [] };
       sources.forEach((source, i) => {
         const layer = normalizeLayer(source.layer || source.category);
@@ -770,7 +779,7 @@
           });
         });
       });
-      return rows.length ? rows : DEMO_SUMMARY_DATA.audio_timeline;
+      return rows;
     }
 
     function makeComposition(audioTimeline) {
@@ -813,7 +822,7 @@
     }
 
     function makeAISummary(history) {
-      if (!history.length) return DEMO_SUMMARY_DATA.ai_summary;
+      if (!history.length) return EMPTY_SUMMARY_DATA.ai_summary;
       const first = history[0]?.llm_state || history[0]?.rule_state || "an initial state";
       const last = history[history.length - 1]?.llm_state || history[history.length - 1]?.rule_state || "a later state";
       return `You moved from ${first} toward ${last}, while the soundscape adjusted its density, motion, and grounding cues across the session.`;
@@ -825,13 +834,14 @@
     }
 
     function renderSummary(data) {
-      renderMetrics(data.metrics);
-      setText("ai-summary-text", data.ai_summary);
-      renderMentalTimeline(data.mental_timeline, data.audio_events, data.session.duration_sec);
-      renderAudioTimeline(data.audio_timeline, data.session.duration_sec);
-      renderComposition(data.audio_composition);
-      renderTopAudioElements(data.top_audio_elements);
-      setText("insightText", data.insight);
+      const safe = data || EMPTY_SUMMARY_DATA;
+      renderMetrics(safe.metrics || EMPTY_SUMMARY_DATA.metrics);
+      setText("ai-summary-text", safe.ai_summary || EMPTY_SUMMARY_DATA.ai_summary);
+      renderMentalTimeline(safe.mental_timeline || [], safe.audio_events || [], safe.session?.duration_sec || 0);
+      renderAudioTimeline(safe.audio_timeline || [], safe.session?.duration_sec || 0);
+      renderComposition(safe.audio_composition || EMPTY_SUMMARY_DATA.audio_composition);
+      renderTopAudioElements(safe.top_audio_elements || []);
+      setText("insightText", safe.insight || EMPTY_SUMMARY_DATA.insight);
     }
 
     function renderMetrics(metrics) {
@@ -850,7 +860,11 @@
 
     function renderMentalTimeline(points, events, duration) {
       const el = document.getElementById("mentalTimelineChart");
-      const safePoints = Array.isArray(points) && points.length ? points : DEMO_SUMMARY_DATA.mental_timeline;
+      const safePoints = Array.isArray(points) ? points : [];
+      if (!safePoints.length) {
+        el.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.52);font-size:14px;text-align:center;padding:24px;">No real EEG timeline has been generated yet.</div>`;
+        return;
+      }
       const safeEvents = compactTimelineEvents(Array.isArray(events) ? events : []);
       const maxT = Math.max(duration || 1, ...safePoints.map(p => p.time_sec || 0), 1);
       const minWidthByTime = Math.ceil(maxT / 60) * 110;
@@ -975,19 +989,20 @@
     }
 
     function renderAudioTimeline(items, duration) {
-      const total = Math.max(duration || 1, ...items.map(i => i.end_sec || 0), 1);
+      const safeItems = Array.isArray(items) ? items : [];
+      const total = Math.max(duration || 1, ...safeItems.map(i => i.end_sec || 0), 1);
       const scale = document.getElementById("sound-time-scale");
       scale.innerHTML = [0, .2, .4, .6, .8, 1].map(p => `<span>${formatTime(total * p)}</span>`).join("");
       ["ambient", "event", "action"].forEach(layer => {
         const track = document.getElementById(`track-${layer}`);
-        const layerItems = layoutAudioBars(items.filter(i => normalizeLayer(i.layer) === layer), total);
+        const layerItems = layoutAudioBars(safeItems.filter(i => normalizeLayer(i.layer) === layer), total);
         const laneCount = Math.max(1, ...layerItems.map(item => item.lane + 1));
         track.style.height = `${laneCount * 26}px`;
-        track.innerHTML = layerItems.map(item => {
+        track.innerHTML = layerItems.length ? layerItems.map(item => {
           const left = clamp(Number(item.start_sec) / total * 100, 0, 100);
           const width = clamp((Number(item.end_sec) - Number(item.start_sec)) / total * 100, 6, 100 - left);
           return `<div class="sound-bar ${layer}" title="${escapeHtml(item.label)}" style="left:${left}%;width:${width}%;top:${2 + item.lane * 26}px">${escapeHtml(item.label)}</div>`;
-        }).join("");
+        }).join("") : `<div style="color:rgba(255,255,255,.32);font-size:12px;padding-top:4px;">No real ${layer} timeline</div>`;
       });
     }
 
@@ -1008,9 +1023,10 @@
     }
 
     function renderComposition(comp) {
-      const ambient = clamp(comp.ambient || 0, 0, 100);
-      const event = clamp(comp.event || 0, 0, 100);
-      const action = clamp(comp.action ?? (100 - ambient - event), 0, 100);
+      const safeComp = comp || {};
+      const ambient = clamp(safeComp.ambient || 0, 0, 100);
+      const event = clamp(safeComp.event || 0, 0, 100);
+      const action = clamp(safeComp.action ?? (100 - ambient - event), 0, 100);
       const r = 48;
       const c = 2 * Math.PI * r;
       const parts = [

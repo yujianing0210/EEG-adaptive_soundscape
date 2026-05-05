@@ -443,14 +443,19 @@ def classify_state(features: dict) -> str:
 
     motion_penalty = False
     if "gyro_std" in features and features["gyro_std"] is not None:
-        if features["gyro_std"] > 10:
+        if features["gyro_std"] > 1.5:
             motion_penalty = True
 
-    if alpha_beta > 1.4 and stability > 0.015 and not motion_penalty:
+    if (
+        alpha_beta > 1.8
+        and 0 < theta_beta < 0.75
+        and stability > 6.0
+        and not motion_penalty
+    ):
         return "stable_relaxation"
-    elif alpha_beta > 1.15 and not motion_penalty:
+    elif alpha_beta > 1.25 and stability > 3.0 and not motion_penalty:
         return "settling"
-    elif theta_beta < 1.1 and not motion_penalty:
+    elif 0 < theta_beta < 1.1 and stability > 2.0 and not motion_penalty:
         return "effortful_focus"
     else:
         return "distracted_or_unstable"
@@ -722,7 +727,7 @@ def call_llm(payload: dict) -> dict:
     developer_prompt = """
 You are an interpretation agent for meditation-related EEG summaries.
 
-You receive structured EEG-derived features from a 60-second sliding window.
+You receive structured EEG-derived features from the current sliding window.
 Compare the current window with the previous window and recent history.
 
 Your job:
@@ -1137,6 +1142,24 @@ def get_realtime_payload_history(max_items: int = 50) -> list:
             return data[-max_items:]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+def get_latest_realtime_sample() -> Optional[dict]:
+    recent = stream_buffer.get_recent_df(window_sec=2.0)
+    if recent.empty:
+        return None
+    try:
+        features = extract_window_features(recent)
+        state = classify_state(features)
+    except Exception:
+        return None
+    latest_time = float(recent["time_sec"].max()) if "time_sec" in recent.columns else 0.0
+    return {
+        "time_sec": latest_time,
+        "current_features": features,
+        "current_rule_state": state,
+        "source": "realtime_recent_sample",
+    }
 
 
 def get_realtime_diagnostics() -> dict:

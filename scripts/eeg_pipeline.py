@@ -107,12 +107,18 @@ def classify_state(features: dict) -> str:
     stability = features["stability_score"]
     motion_penalty = False
     if "gyro_std" in features and features.get("gyro_std") is not None:
-        motion_penalty = features["gyro_std"] > 10
-    if alpha_beta > 1.4 and stability > 0.015 and not motion_penalty:
+        motion_penalty = features["gyro_std"] > 1.5
+
+    if (
+        alpha_beta > 1.8
+        and 0 < theta_beta < 0.75
+        and stability > 6.0
+        and not motion_penalty
+    ):
         return "stable_relaxation"
-    if alpha_beta > 1.15 and not motion_penalty:
+    if alpha_beta > 1.25 and stability > 3.0 and not motion_penalty:
         return "settling"
-    if theta_beta < 1.1 and not motion_penalty:
+    if 0 < theta_beta < 1.1 and stability > 2.0 and not motion_penalty:
         return "effortful_focus"
     return "distracted_or_unstable"
 
