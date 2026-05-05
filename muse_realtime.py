@@ -972,6 +972,9 @@ def run_realtime_pipeline(
                 except Exception as e:
                     print(f"LLM call failed on window {window_id}: {e}")
                     llm_result = None
+            if llm_result is not None:
+                payload["llm_result"] = llm_result
+                payload["llm_state"] = llm_result.get("state_label")
 
             record = {
                 "window_id": window_id,

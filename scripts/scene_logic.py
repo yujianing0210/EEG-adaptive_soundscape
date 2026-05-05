@@ -224,6 +224,7 @@ def choose_sources(
     state_label: str = "settling",
     mind_wandering_risk: Optional[float] = None,
     stability: Optional[float] = None,
+    attention_delta: Optional[float] = None,
     previous_scene: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     scene_family = _canonical_scene_family(scene_family)
@@ -353,16 +354,23 @@ def choose_sources(
         ]
 
     allow_event = False
+    attention_declining = attention_delta is not None and attention_delta < -0.04
+    attention_improving = attention_delta is not None and attention_delta > 0.04
     strong_attention_recovery = (
         (attention is not None and attention < 0.32)
         or (mind_wandering_risk is not None and mind_wandering_risk >= 0.85)
+        or (attention_declining and attention is not None and attention < 0.55)
     )
     if flags["attention_low"]:
+        allow_event = True
+    if attention_declining and not flags["anxiety_high"]:
         allow_event = True
     if mind_wandering_risk is not None and mind_wandering_risk >= 0.72 and not flags["anxiety_high"]:
         allow_event = True
     if not flags["anxiety_high"] and not flags["settling"] and eventfulness >= 0.12:
         allow_event = True
+    if attention_improving and not flags["attention_low"] and eventfulness < 0.4:
+        allow_event = False
     min_event_gap = 2 if flags["anxiety_high"] else 0
     if allow_event and (seg_idx - last_event_segment) < min_event_gap and not strong_attention_recovery:
         allow_event = False
@@ -373,6 +381,10 @@ def choose_sources(
             trigger_prob = 1.0
         if flags["attention_low"]:
             trigger_prob += 0.10
+        if attention_declining:
+            trigger_prob += 0.18
+        if attention_improving and not flags["attention_low"]:
+            trigger_prob -= 0.22
         if flags["anxiety_high"]:
             trigger_prob -= 0.25
         if strong_attention_recovery:
@@ -409,6 +421,10 @@ def choose_sources(
             score = 0.0
             if "attention_low" in use_when:
                 score += 3.5
+            if attention_declining and "attention_low" in use_when:
+                score += 1.2
+            if attention_improving and not flags["attention_low"] and "attention_low" in use_when:
+                score -= 1.0
             if distance in {"far", "middle", "wide"}:
                 score += 1.5
             score += _safe_float(a.get("priority"), 0.5)
@@ -477,7 +493,7 @@ def choose_sources(
                 "ocean": "ocean_wet_sand_footstep_01",
             }
             preferred_action_id = scene_action_ids.get(scene_family, "body_slow_breath_01")
-            if flags["attention_low"] and seg_idx % 2 == 0:
+            if (flags["attention_low"] or attention_declining) and seg_idx % 2 == 0:
                 for a in action_candidates:
                     if str(a.get("asset_id", "")).lower() == preferred_action_id:
                         action_selected = a
@@ -493,7 +509,7 @@ def choose_sources(
                     if str(a.get("asset_id", "")) not in previous_action_ids
                     and str(a.get("asset_id", "")).lower() != "body_slow_breath_01"
                 ]
-                if alternatives and (flags["attention_low"] or seg_idx % 4 == 0):
+                if alternatives and (flags["attention_low"] or attention_declining or seg_idx % 4 == 0):
                     action_selected = random.choice(alternatives)
         if action_selected is None and event_selected is not None:
             # If event is present, still allow a gentle grounding layer sometimes.
@@ -1207,6 +1223,97 @@ def _update_scene_runtime_state(
     return scene
 
 
+def _scene_active_asset_ids(scene: Dict[str, Any]) -> List[str]:
+    active = (scene.get("world_state") or {}).get("active_sources")
+    if isinstance(active, list) and active:
+        return [str(v) for v in active if str(v)]
+    return [
+        str(src.get("asset_id") or src.get("source_id") or "")
+        for src in scene.get("sources", [])
+        if str(src.get("asset_id") or src.get("source_id") or "")
+    ]
+
+
+def _compact_asset_for_llm(asset: Dict[str, Any]) -> Dict[str, Any]:
+    compact = {
+        "asset_id": asset.get("asset_id"),
+        "asset_ref": asset.get("asset_ref"),
+        "label": asset.get("label"),
+        "scene": asset.get("scene"),
+        "layer": _asset_layer(asset),
+        "tags": asset.get("tags", [])[:8] if isinstance(asset.get("tags"), list) else asset.get("tags"),
+        "description": asset.get("description"),
+        "intensity": asset.get("intensity"),
+        "suddenness": asset.get("suddenness"),
+        "recommended_volume": asset.get("recommended_volume"),
+        "recommended_distance": asset.get("recommended_distance"),
+        "spatial_behavior": asset.get("spatial_behavior"),
+        "default_position": asset.get("default_position"),
+        "default_motion": asset.get("default_motion"),
+        "use_when": asset.get("use_when"),
+        "avoid_when": asset.get("avoid_when"),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+
+def _scene_llm_library(
+    library: List[Dict[str, Any]],
+    scene_family: str,
+    previous_scene: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    previous_ids = set(_scene_active_asset_ids(previous_scene))
+    relevant = [
+        asset for asset in library
+        if _matches_scene(asset, scene_family) or str(asset.get("asset_id")) in previous_ids
+    ]
+
+    def rank(asset: Dict[str, Any]) -> tuple:
+        layer = _asset_layer(asset)
+        layer_rank = {"ambient": 0, "action": 1, "event": 2}.get(layer, 3)
+        return (
+            -int(str(asset.get("asset_id")) in previous_ids),
+            layer_rank,
+            -_safe_float(asset.get("priority"), 0.5),
+            _safe_float(asset.get("suddenness"), 0.2),
+            str(asset.get("asset_id", "")),
+        )
+
+    selected = sorted(relevant, key=rank)
+    return [_compact_asset_for_llm(asset) for asset in selected]
+
+
+def _compact_previous_scene_for_llm(scene: Dict[str, Any]) -> Dict[str, Any]:
+    world_state = scene.get("world_state") if isinstance(scene.get("world_state"), dict) else {}
+    compact_sources = []
+    for source in scene.get("sources", []):
+        compact_sources.append({
+            "asset_id": source.get("asset_id") or source.get("source_id"),
+            "layer": source.get("layer") or source.get("category"),
+            "volume": source.get("volume"),
+            "position": source.get("position"),
+            "motion": source.get("motion"),
+            "loop": source.get("loop"),
+            "repeat_count": source.get("repeat_count"),
+            "repeat_interval_sec": source.get("repeat_interval_sec"),
+        })
+    return {
+        "scene_id": scene.get("scene_id"),
+        "segment_id": scene.get("segment_id"),
+        "scene_type": scene.get("scene_type"),
+        "duration_sec": scene.get("duration_sec"),
+        "atmosphere": scene.get("atmosphere"),
+        "sources": compact_sources,
+        "mental_state": scene.get("mental_state", {}),
+        "world_state": {
+            "active_sources": world_state.get("active_sources"),
+            "recent_event_ids": world_state.get("recent_event_ids"),
+            "played_event_counts": world_state.get("played_event_counts"),
+            "last_event_segment": world_state.get("last_event_segment"),
+            "scene_family": world_state.get("scene_family"),
+        },
+    }
+
+
 def llm_adapt_scene(
     previous_scene: Dict[str, Any],
     mental_state: Dict[str, Any],
@@ -1216,18 +1323,22 @@ def llm_adapt_scene(
     if not client:
         return None
     prompt = read_prompt("scene_adaptation_prompt.md")
+    llm_library = _scene_llm_library(library, scene_family, previous_scene)
     messages = [
         {"role": "system", "content": prompt or "You update a spatial meditation scene."},
         {
             "role": "user",
             "content": json.dumps(
                 {
-                    "previous_scene": previous_scene,
+                    "previous_scene": _compact_previous_scene_for_llm(previous_scene),
                     "mental_state": mental_state,
                     "scene_family": scene_family,
-                    "audio_library": library,
+                    "audio_library": llm_library,
                     "constraints": {
                         "use_only_asset_ids_from_audio_library": True,
+                        "must_change_each_window": "Change at least one event/action source from previous_scene when alternatives exist; if preserving the same source, change motion, repeat, or volume.",
+                        "prefer_not_recent": "Prefer event/action asset_ids not listed in previous_scene.world_state.recent_event_ids. Avoid repeating the exact same event/action asset set in consecutive windows.",
+                        "attention_event_logic": "If mental_state.attention_trend_direction is down, rotate in a gentle far/middle event or subtle action cue. If it is up and attention is not low, reduce novelty and avoid adding a new attention cue.",
                         "sources_per_segment": "2-5",
                         "ambient_layers": "1-2",
                         "event_and_action_may_coexist": True,
@@ -1244,6 +1355,7 @@ def llm_adapt_scene(
                     },
                 },
                 ensure_ascii=False,
+                separators=(",", ":"),
             ),
         },
     ]
@@ -1252,7 +1364,8 @@ def llm_adapt_scene(
             model=MODEL,
             messages=messages,
             response_format={"type": "json_object"},
-            temperature=0.25,
+            temperature=0.55,
+            max_tokens=1400,
         )
         scene = json.loads(res.choices[0].message.content)
         scene = normalize_scene_assets(scene, library, scene_family)
@@ -1262,7 +1375,12 @@ def llm_adapt_scene(
         scene["mental_state"].update(mental_state)
         scene["mental_state"]["source"] = "llm"
         scene = _add_gentle_event_if_missing(scene, library, scene_family, scene["mental_state"])
-        return _update_scene_runtime_state(scene, previous_scene, scene["mental_state"], scene_family)
+        scene = _update_scene_runtime_state(scene, previous_scene, scene["mental_state"], scene_family)
+        prev_ids = _scene_active_asset_ids(previous_scene)
+        next_ids = _scene_active_asset_ids(scene)
+        if prev_ids and next_ids and set(prev_ids) == set(next_ids):
+            return None
+        return scene
     except Exception:
         return None
 
@@ -1304,6 +1422,12 @@ def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], li
     relaxation = _score_unit(mental_state.get("relaxation", 0.5), 0.5)
     stability = _score_unit(mental_state.get("stability", 0.5), 0.5)
     mind_wandering_risk = _clamp01(mental_state.get("mind_wandering_risk", 0.5), 0.5)
+    attention_delta = mental_state.get("attention_delta")
+    if attention_delta is not None:
+        try:
+            attention_delta = max(-1.0, min(1.0, float(attention_delta)))
+        except (TypeError, ValueError):
+            attention_delta = None
     anxiety = mental_state.get("anxiety")
     if anxiety is not None:
         anxiety = _clamp01(anxiety, 0.5)
@@ -1319,6 +1443,7 @@ def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], li
         state_label=state_label,
         mind_wandering_risk=mind_wandering_risk,
         stability=stability,
+        attention_delta=attention_delta,
         previous_scene=previous_scene,
     )
     placed = place_sources(assets, density)

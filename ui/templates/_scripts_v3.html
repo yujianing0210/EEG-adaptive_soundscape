@@ -15,6 +15,7 @@ const V3NS = (() => {
   ];
   const PHASES    = ['settling','immersion','adaptive_shift','integration'];
   const DENSITIES = ['low','low','medium','low'];
+  let eegStepSec = Number('{{ eeg_step_sec or 10 }}') || 10;
   const GUIDANCE  = [
     'Now, imagine yourself in a rainforest.',
     'Notice your breath while soft forest air surrounds you.',
@@ -91,6 +92,7 @@ const V3NS = (() => {
   let sec=0, phaseIdx=0, playing=false;
   let timerInt=null, mapRAF=null, waveRAF=null;
   let stepInFlight=false;
+  let pendingEEGSteps=0;
   let eegSampleInFlight=false;
   let endingSession=false;
   let lastEEGStep=0;
@@ -106,7 +108,7 @@ const V3NS = (() => {
   let lastRealtimeSamplePoll=0;
   let lastPlaybackHistoryAt=-1;
   let latestMental=null;
-  let latestTrend=null;
+  let latestPreviousMental=null;
   let latestRecItem=null;
   let latestWindowMental=null;
 
@@ -142,13 +144,17 @@ const V3NS = (() => {
       if (r.ok) {
         applyState(d);
         V2.payload = null;
+        V2.history = [];
+        V2.idx = -1;
+        V2.total = Number(d.total_windows) || 0;
+        eegStepSec = Number(d.eeg_step_sec) || eegStepSec;
         hasRealEEG = false;
         v3Bands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
         v3TargetBands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
         v3BandHistory = [];
         eegPlaybackSamples = [];
         latestMental = null;
-        latestTrend = null;
+        latestPreviousMental = null;
         latestRecItem = null;
         latestWindowMental = null;
         phaseIdx = 0;
@@ -177,7 +183,7 @@ const V3NS = (() => {
     endingSession=false;
     sessionStartMs=performance.now();
     lastPlaybackHistoryAt=-1;
-    latestRecItem = Array.isArray(V2.history) && V2.history.length ? V2.history[V2.history.length-1] : null;
+    latestRecItem = V2.idx >= 0 && Array.isArray(V2.history) && V2.history.length ? V2.history[V2.history.length-1] : null;
     latestWindowMental = latestRecItem;
     clearInterval(timerInt);
     refreshScene();
@@ -213,7 +219,7 @@ const V3NS = (() => {
       const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
       const el=document.getElementById('v3-timer');
       if (el) el.textContent=`${p2(h)}:${p2(m)}:${p2(s)}`;
-      const eegStep=Math.floor(sec/30);
+      const eegStep=Math.floor(sec/eegStepSec);
       const ni=syncPhaseFromSession();
       if (ni!==phaseIdx) {
         phaseIdx=ni;
@@ -238,7 +244,7 @@ const V3NS = (() => {
     return 0;
   }
   function syncPhaseFromSession() {
-    const eegStep=Math.floor(sec/30);
+    const eegStep=Math.floor(sec/eegStepSec);
     return eegMode === 'recorded' ? dataDrivenPhaseIdx() : Math.min(3,eegStep);
   }
 
@@ -267,7 +273,11 @@ const V3NS = (() => {
   }
 
   async function processEEGStep() {
-    if (stepInFlight || endingSession) return;
+    if (endingSession) return;
+    if (stepInFlight) {
+      pendingEEGSteps++;
+      return;
+    }
     stepInFlight=true;
     try {
       const r=await fetch('/api/step', {
@@ -301,6 +311,10 @@ const V3NS = (() => {
       console.warn('V3 EEG step failed', e);
     } finally {
       stepInFlight=false;
+      if (pendingEEGSteps > 0 && playing && !endingSession) {
+        pendingEEGSteps--;
+        setTimeout(processEEGStep, 0);
+      }
     }
   }
 
@@ -445,7 +459,13 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   }
 
   /* EEG bars */
-  const BCOLORS={alpha:'rgba(248,113,113,.8)',beta:'rgba(251,191,36,.8)',theta:'rgba(52,211,153,.8)',delta:'rgba(96,165,250,.8)',gamma:'rgba(167,139,250,.8)'};
+  const BCOLORS={
+    alpha:'rgba(232,135,139,.94)',
+    beta:'rgba(246,216,115,.94)',
+    theta:'rgba(155,235,173,.94)',
+    delta:'rgba(147,205,240,.94)',
+    gamma:'rgba(201,168,239,.94)'
+  };
   const BLABELS={alpha:'Alpha',beta:'Beta',theta:'Theta',delta:'Delta',gamma:'Gamma'};
   function ensureBars() {
     const el=document.getElementById('v3-eeg-bars'); if(!el) return null;
@@ -466,9 +486,10 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     const el=ensureBars(); if(!el) return;
     v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
     v3TargetBands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
-    sEl('v3-anx-v','--'); sHTML('v3-anx-t','--');
-    sEl('v3-att-v','--'); sHTML('v3-att-t','--');
-    sEl('v3-stb-v','--'); sHTML('v3-stb-t','--');
+    sEl('v3-rel-v','--');
+    sEl('v3-att-v','--');
+    sEl('v3-stb-v','--');
+    renderMentalTrend(null, null);
   }
   function updateBandBars() {
     Object.keys(v3TargetBands).forEach(key=>{
@@ -482,72 +503,48 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       el.style.height=`${Math.round(Math.max(.06,base)*66)}px`;
       el.dataset.base=String(base);
     });
-    if (latestMental && latestTrend) renderMental({mental:latestMental,trend:latestTrend});
+    if (latestMental) renderMental(latestMental, latestPreviousMental);
   }
 
   /* Mental state cards */
-  const TMAP={up:'<span class="v3tu">up</span>',down:'<span class="v3td">down</span>',stable:'<span class="v3ts">flat</span>'};
   function normBand(v) {
     const n=Number(v);
     if (!Number.isFinite(n)) return 0;
     return Math.max(0,Math.min(1,n));
   }
-  function score10(v) {
+  function interpretationNumber(v) {
     const n=Number(v);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0,Math.min(10,n));
+    return Number.isFinite(n) ? n : null;
   }
-  function scaledScore(v, low, high) {
-    const n=Number(v);
-    if (!Number.isFinite(n) || high <= low) return 0;
-    return score10(((n-low)/(high-low))*10);
+  function mentalScale01(v) {
+    const n=interpretationNumber(v);
+    if (n == null) return null;
+    return Math.max(0,Math.min(1,n <= 1 ? n : n/10));
   }
-  function mentalScoresFromFeatures(f, ruleState) {
-    const attention=score10(f.attention_score);
-    const stability=scaledScore(f.stability_score, 1.5, 8.0);
-    const relaxation=scaledScore(f.relaxation_score, 1.0, 3.5);
-    let anxiety=(10-relaxation)*0.62+(10-stability)*0.28;
-    if (ruleState === 'distracted_or_unstable') anxiety += 1.8;
-    if (ruleState === 'stable_relaxation') anxiety -= 1.2;
-    return {anxiety:score10(anxiety), attention, stability};
+  function mentalScoresFromWindow(item) {
+    const mental=item?.mental_state || item;
+    if (!mental) return null;
+    return {
+      attention:mentalScale01(mental.attention ?? item?.attention),
+      relaxation:mentalScale01(mental.relaxation ?? item?.relaxation),
+      stability:mentalScale01(mental.stability ?? item?.stability),
+    };
   }
-  function outputScore10(v) {
-    const n=Number(v);
-    if (!Number.isFinite(n)) return 0;
-    if (n <= 1) return score10(n*10);
-    return score10(n);
-  }
-  function anxietyFromWindowOutput(mental) {
-    if (mental.anxiety != null) return outputScore10(mental.anxiety);
-    const relaxation=outputScore10(mental.relaxation);
-    const stability=outputScore10(mental.stability);
-    let anxiety=(10-relaxation)*0.62+(10-stability)*0.28;
-    const state=String(mental.state_label || mental.llm_state || '').toLowerCase();
-    if (state.includes('distracted') || state.includes('unstable')) anxiety += 1.8;
-    if (state.includes('stable_relaxation')) anxiety -= 1.2;
-    return score10(anxiety);
+  function previousWindowMental(item) {
+    const hist=Array.isArray(V2.history) ? V2.history : [];
+    if (!hist.length) return null;
+    const idx=hist.findIndex(h => h === item || String(h?.window_id) === String(item?.window_id));
+    if (idx > 0) return hist[idx-1];
+    if (idx < 0 && hist.length > 1 && hist[hist.length-1] === item) return hist[hist.length-2];
+    return null;
   }
   function renderMentalFromWindowOutput(item) {
-    const mental=item?.mental_state || item;
-    if (!mental) return;
+    if (!item) return;
     latestWindowMental=item;
-    const scores={
-      anxiety:anxietyFromWindowOutput(mental),
-      attention:outputScore10(mental.attention),
-      stability:outputScore10(mental.stability),
-    };
-    const trend=String(item.trend || mental.trend || '').toLowerCase();
-    const trendObj={
-      anxiety:trend.includes('decreas') ? 'down' : trend.includes('increas') ? 'up' : 'stable',
-      attention:scores.attention>=5?'up':'down',
-      stability:scores.stability>=5?'up':'down',
-    };
+    const scores=mentalScoresFromWindow(item);
     latestMental=scores;
-    latestTrend=trendObj;
-    renderMental({
-      mental:scores,
-      trend:trendObj
-    });
+    latestPreviousMental=mentalScoresFromWindow(previousWindowMental(item));
+    renderMental(scores, latestPreviousMental);
   }
   function renderFromPayload(payload, opts={}) {
     const f=payload?.current_features;
@@ -574,19 +571,64 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
         v3BandHistory[v3BandHistory.length-1] = {window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands};
       }
     }
-    if (latestWindowMental) return;
-    latestMental=mentalScoresFromFeatures(f, payload.current_rule_state);
-    latestTrend={
-      anxiety:payload.current_rule_state==='distracted_or_unstable'?'up':'stable',
-      attention:latestMental.attention>=5?'up':'down',
-      stability:latestMental.stability>=5?'up':'down',
-    };
-    renderMental({mental:latestMental,trend:latestTrend});
+    if (!latestWindowMental) renderMental(null);
   }
-  function renderMental({mental,trend}) {
-    sEl('v3-anx-v',mental.anxiety.toFixed(1));   sHTML('v3-anx-t',TMAP[trend.anxiety]  ||'--');
-    sEl('v3-att-v',mental.attention.toFixed(1));  sHTML('v3-att-t',TMAP[trend.attention]||'--');
-    sEl('v3-stb-v',mental.stability.toFixed(1));  sHTML('v3-stb-t',TMAP[trend.stability]||'--');
+  function mentalText(v) {
+    return v == null ? '--' : Number(v).toFixed(2);
+  }
+  function mentalTrendText(current, previous) {
+    if (current == null || previous == null) return {text:'--', cls:'v3ts'};
+    const delta=Number(current)-Number(previous);
+    if (!Number.isFinite(delta) || Math.abs(delta) < 0.01) return {text:'→ 0.00', cls:'v3ts'};
+    return {
+      text:`${delta > 0 ? '↑' : '↓'} ${Math.abs(delta).toFixed(2)}`,
+      cls:delta > 0 ? 'v3tu' : 'v3td',
+    };
+  }
+  function setTrend(id, trend) {
+    const e=document.getElementById(id);
+    if (!e) return;
+    e.className=`v3-mtrend ${trend.cls}`;
+    e.textContent=trend.text;
+  }
+  function renderMentalTrend(mental, previous) {
+    setTrend('v3-rel-tr', mentalTrendText(mental?.relaxation, previous?.relaxation));
+    setTrend('v3-att-tr', mentalTrendText(mental?.attention, previous?.attention));
+    setTrend('v3-stb-tr', mentalTrendText(mental?.stability, previous?.stability));
+  }
+  function setThreshold(id, labelId, value, threshold, active, text, marker=threshold) {
+    const bar=document.getElementById(id);
+    const label=document.getElementById(labelId);
+    const n=Number(value);
+    const pct=Number.isFinite(n) ? Math.max(0,Math.min(100,n*100)) : 0;
+    if (bar) {
+      const fill=bar.querySelector('span');
+      const mark=bar.querySelector('i');
+      if (fill) fill.style.width=`${pct}%`;
+      if (mark) mark.style.left=`${Math.max(0,Math.min(100,marker*100))}%`;
+      bar.classList.toggle('on', !!active);
+    }
+    if (label) {
+      label.textContent=text;
+      label.className=`v3-thtxt ${active ? 'on' : 'good'}`;
+    }
+  }
+  function renderMentalThresholds(mental, previous) {
+    const attentionDelta = mental?.attention != null && previous?.attention != null ? Number(mental.attention)-Number(previous.attention) : 0;
+    const attentionDown = Number.isFinite(attentionDelta) && attentionDelta < -0.04;
+    const attentionCue = mental?.attention != null && (Number(mental.attention) < 0.45 || attentionDown);
+    const relaxationLow = mental?.relaxation != null && Number(mental.relaxation) < 0.45;
+    const stabilityHigh = mental?.stability != null && Number(mental.stability) >= 0.65;
+    setThreshold('v3-rel-th','v3-rel-thtxt',mental?.relaxation,0.45,relaxationLow,relaxationLow ? 'low < .45' : 'ok >= .45');
+    setThreshold('v3-att-th','v3-att-thtxt',mental?.attention,0.45,attentionCue,attentionDown ? 'cue: down' : (attentionCue ? 'cue < .45' : 'ok >= .45'));
+    setThreshold('v3-stb-th','v3-stb-thtxt',mental?.stability,0.65,stabilityHigh,stabilityHigh ? 'high >= .65' : 'below .65');
+  }
+  function renderMental(mental, previous=null) {
+    sEl('v3-rel-v',mentalText(mental?.relaxation));
+    sEl('v3-att-v',mentalText(mental?.attention));
+    sEl('v3-stb-v',mentalText(mental?.stability));
+    renderMentalTrend(mental, previous);
+    renderMentalThresholds(mental, previous);
   }
   function sEl(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
   function sHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h;}
@@ -823,7 +865,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
 
     /* rings */
     const ringLabels=[
-      {r:rO,lbl:'FAR',sub:'[6m,+鈭瀅',y:sz-sz*.072},
+      {r:rO,lbl:'FAR',sub:'6m+',y:sz-sz*.072},
       {r:rM,lbl:'MIDDLE',sub:'[3m,6m]',y:Math.min(cy+rM+sz*.038, sz-sz*.17)},
       {r:rI,lbl:'NEAR',sub:'[0,3m]',y:Math.min(cy+rI+sz*.038, cy+rM-sz*.022)},
     ];
@@ -923,16 +965,20 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       return;
     }
     const series = v3BandHistory.length ? v3BandHistory : [{bands:v3Bands}];
+    const waveValue = (item, key) => {
+      const bands = item.bands || {};
+      if (key === 'alpha_beta') {
+        return Math.max(0, Math.min(1, (normBand(bands.alpha) + normBand(bands.beta)) * .5));
+      }
+      return normBand(bands[key]);
+    };
     [
-      ['delta','rgba(96,165,250,.5)'],
-      ['theta','rgba(52,211,153,.55)'],
-      ['beta','rgba(251,191,36,.55)'],
-      ['gamma','rgba(167,139,250,.5)'],
-      ['alpha','rgba(248,113,113,.7)']
+      ['alpha_beta','rgba(255,238,24,.94)'],
+      ['theta','rgba(94,169,255,.9)']
     ].forEach(([key,col])=>{
-      ctx.strokeStyle=col; ctx.lineWidth=1.35; ctx.beginPath();
+      ctx.strokeStyle=col; ctx.lineWidth=2.2; ctx.beginPath();
       series.forEach((item,i)=>{
-        const v=normBand(item.bands?.[key]);
+        const v=waveValue(item,key);
         const x=series.length===1 ? W : (i/(series.length-1))*W;
         const y=H-6-v*(H-12);
         if (i===0) ctx.moveTo(0,y);

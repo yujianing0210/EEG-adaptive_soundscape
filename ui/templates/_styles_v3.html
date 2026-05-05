@@ -154,14 +154,61 @@
     .v3-bbg  { height:5px; background:rgba(255,255,255,.055); border-radius:3px; overflow:hidden; }
     .v3-bfill { height:100%; border-radius:3px; transition:width 1.6s ease; }
     .v3-bnum { font-size:8.5px; color:rgba(255,255,255,.35); text-align:right; }
-    #v3-wave { width:100%; height:54px; display:block; margin-top:7px; border-radius:5px; }
+    .v3-wave-wrap { position:relative; margin-top:7px; }
+    #v3-wave { width:100%; height:54px; display:block; border-radius:5px; }
+    .v3-wave-legend {
+      position:absolute;
+      top:4px;
+      right:6px;
+      display:flex;
+      flex-direction:column;
+      gap:3px;
+      color:rgba(255,255,255,.88);
+      font-size:11px;
+      line-height:1;
+      pointer-events:none;
+      text-shadow:0 1px 8px rgba(0,0,0,.35);
+    }
+    .v3-wave-legend div { display:flex; align-items:center; gap:5px; justify-content:flex-end; }
+    .v3-wave-legend span { width:24px; height:3px; border-radius:999px; display:inline-block; }
     .v3-mcard-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-top:3px; }
-    .v3-mcard { background:rgba(255,255,255,.038); border:1px solid rgba(255,255,255,.065); border-radius:8px; padding:9px 6px; display:flex; flex-direction:column; align-items:center; gap:2px; }
+    .v3-mcard { background:rgba(255,255,255,.038); border:1px solid rgba(255,255,255,.065); border-radius:8px; padding:8px 6px; display:flex; flex-direction:column; align-items:center; gap:2px; }
     .v3-mname  { font-size:8.5px; letter-spacing:.1em; color:rgba(255,255,255,.38); text-transform:uppercase; }
     .v3-mtrend { font-size:12px; height:14px; color:rgba(255,255,255,.38); }
     .v3-mval   { font-size:17px; font-weight:200; color:rgba(255,255,255,.8); line-height:1; }
     .v3-mdenom { font-size:8.5px; color:rgba(255,255,255,.26); }
-    .v3tu { color:rgba(251,113,133,.9); } .v3td { color:rgba(52,211,153,.9); } .v3ts { color:rgba(255,255,255,.24); }
+    .v3tu { color:rgba(52,211,153,.95); } .v3td { color:rgba(251,113,133,.92); } .v3ts { color:rgba(255,255,255,.34); }
+    .v3-thbar {
+      position:relative;
+      width:min(64px,100%);
+      height:4px;
+      margin-top:2px;
+      border-radius:999px;
+      background:rgba(255,255,255,.09);
+      overflow:visible;
+    }
+    .v3-thbar span {
+      display:block;
+      width:0%;
+      height:100%;
+      border-radius:999px;
+      background:rgba(255,255,255,.34);
+      transition:width .45s ease, background .25s ease;
+    }
+    .v3-thbar i {
+      position:absolute;
+      top:-3px;
+      left:45%;
+      width:1px;
+      height:10px;
+      background:rgba(255,255,255,.38);
+      box-shadow:0 0 8px rgba(255,255,255,.18);
+    }
+    .v3-thbar.on span { background:rgba(251,113,133,.9); }
+    .v3-thbar.high.on span { background:rgba(52,211,153,.9); }
+    .v3-thtxt { font-size:7.5px; color:rgba(255,255,255,.3); line-height:1.1; white-space:nowrap; }
+    .v3-thtxt.on { color:rgba(251,113,133,.9); }
+    .v3-thtxt.good { color:rgba(52,211,153,.88); }
     .v3-rec { font-size:9.5px; color:rgba(255,255,255,.36); line-height:1.7; margin-top:3px; white-space:pre-line; }
     /* Footer */
     .v3-footer { display:flex; flex-direction:column; align-items:center; gap:6px; padding:6px 0 10px; flex-shrink:0; }
@@ -1151,6 +1198,27 @@
       background:
         linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.018)),
         var(--v3-scene-img) center/cover no-repeat;
+    }
+    #v3 .v3-right .v3-panel:first-child {
+      background:
+        linear-gradient(145deg, rgba(92,108,88,.42), rgba(50,65,48,.34)),
+        rgba(38,52,38,.24);
+      border-color:rgba(235,245,232,.22);
+    }
+    #v3 .v3-right .v3-panel:first-child .v3-band-chart {
+      background:rgba(44,58,43,.24);
+      border-bottom:2px solid rgba(255,255,255,.76);
+      border-radius:0;
+      box-shadow:none;
+      backdrop-filter:none;
+      -webkit-backdrop-filter:none;
+    }
+    #v3 .v3-right .v3-panel:first-child .v3-band-name,
+    #v3 .v3-right .v3-panel:first-child .wl-item {
+      color:rgba(255,255,255,.9);
+    }
+    #v3 #v3-wave {
+      background:rgba(44,58,43,.14);
     }
     #v3 .v3-ptitle i,
     #v3 .v3-ptitle svg {

@@ -110,21 +110,20 @@
         <div class="v3-panel">
           <div class="v3-ptitle"><i data-lucide="brain"></i><span>Brain Power Band</span></div>
           <div id="v3-eeg-bars"></div>
-          <canvas id="v3-wave" width="260" height="54"></canvas>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;">
-            <div class="wl-item"><div class="wl-dot" style="background:rgba(248,113,113,.75)"></div>Alpha</div>
-            <div class="wl-item"><div class="wl-dot" style="background:rgba(251,191,36,.75)"></div>Beta</div>
-            <div class="wl-item"><div class="wl-dot" style="background:rgba(52,211,153,.75)"></div>Theta</div>
-            <div class="wl-item"><div class="wl-dot" style="background:rgba(96,165,250,.75)"></div>Delta</div>
-            <div class="wl-item"><div class="wl-dot" style="background:rgba(167,139,250,.75)"></div>Gamma</div>
+          <div class="v3-wave-wrap">
+            <canvas id="v3-wave" width="260" height="54"></canvas>
+            <div class="v3-wave-legend" aria-label="Waveform legend">
+              <div><span style="background:rgba(255,238,24,.95)"></span>α/β</div>
+              <div><span style="background:rgba(94,169,255,.92)"></span>θ</div>
+            </div>
           </div>
         </div>
         <div class="v3-panel">
           <div class="v3-ptitle"><i data-lucide="activity"></i><span>Mental State</span></div>
           <div class="v3-mcard-grid">
-            <div class="v3-mcard"><div class="v3-mname">Anxiety</div><div class="v3-mtrend" id="v3-anx-t">—</div><div class="v3-mval" id="v3-anx-v">—</div><div class="v3-mdenom">/10</div></div>
-            <div class="v3-mcard"><div class="v3-mname">Attention</div><div class="v3-mtrend" id="v3-att-t">—</div><div class="v3-mval" id="v3-att-v">—</div><div class="v3-mdenom">/10</div></div>
-            <div class="v3-mcard"><div class="v3-mname">Stability</div><div class="v3-mtrend" id="v3-stb-t">—</div><div class="v3-mval" id="v3-stb-v">—</div><div class="v3-mdenom">/10</div></div>
+            <div class="v3-mcard"><div class="v3-mname">Relaxation</div><div class="v3-mval" id="v3-rel-v">—</div><div class="v3-mtrend" id="v3-rel-tr">—</div><div class="v3-thbar" id="v3-rel-th"><span></span><i></i></div><div class="v3-thtxt" id="v3-rel-thtxt">low &lt; .45</div></div>
+            <div class="v3-mcard"><div class="v3-mname">Attention</div><div class="v3-mval" id="v3-att-v">—</div><div class="v3-mtrend" id="v3-att-tr">—</div><div class="v3-thbar" id="v3-att-th"><span></span><i></i></div><div class="v3-thtxt" id="v3-att-thtxt">cue &lt; .45</div></div>
+            <div class="v3-mcard"><div class="v3-mname">Stability</div><div class="v3-mval" id="v3-stb-v">—</div><div class="v3-mtrend" id="v3-stb-tr">—</div><div class="v3-thbar high" id="v3-stb-th"><span></span><i></i></div><div class="v3-thtxt" id="v3-stb-thtxt">high ≥ .65</div></div>
           </div>
         </div>
         <div class="v3-panel">
