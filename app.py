@@ -34,6 +34,8 @@ STATE: Dict[str, Any] = {
     "realtime_active": False,
     "realtime_summary": None,
     "last_summary_at": None,
+    "session_ended": False,
+    "dashboard_summary": None,
 }
 
 OUTPUTS = Path("outputs")
@@ -46,6 +48,7 @@ SESSION_OUTPUT_PATTERNS = (
     "eeg_windows.csv",
     "eeg_payloads.json",
     "eeg_payloads.jsonl",
+    "session_dashboard_summary.json",
     "eeg_window_*_interpretation.json",
     "eeg_window_*_scene_update.json",
     "realtime_summary*.json",
@@ -78,6 +81,363 @@ def write_json(obj: Any, name: str):
     OUTPUTS.mkdir(exist_ok=True)
     with open(OUTPUTS / name, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
+
+
+def _read_runtime_state() -> Optional[dict]:
+    runtime_file = OUTPUTS / "unity_runtime_state.json"
+    if not runtime_file.exists():
+        return None
+    try:
+        with open(runtime_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _source_position(source: dict) -> dict:
+    position = source.get("position") or {}
+    if isinstance(position, list):
+        return {
+            "x": float(position[0]) if len(position) > 0 else 0.0,
+            "y": float(position[1]) if len(position) > 1 else 0.0,
+            "z": float(position[2]) if len(position) > 2 else 0.0,
+        }
+    if isinstance(position, dict):
+        return {
+            "x": float(position.get("x", 0.0) or 0.0),
+            "y": float(position.get("y", 0.0) or 0.0),
+            "z": float(position.get("z", 0.0) or 0.0),
+        }
+    return {"x": 0.0, "y": 0.0, "z": 0.0}
+
+
+def _audio_snapshot(scene: Optional[dict], idx: int) -> dict:
+    if not scene:
+        return {"step": idx, "active_sources": [], "sources": []}
+    active = set((scene.get("world_state") or {}).get("active_sources") or [])
+    sources = []
+    for source in scene.get("sources", []) or []:
+        sid = source.get("source_id") or source.get("asset_id")
+        if not sid:
+            continue
+        sources.append({
+            "id": sid,
+            "asset_id": source.get("asset_id"),
+            "layer": source.get("layer") or source.get("category"),
+            "category": source.get("category") or source.get("layer"),
+            "volume": source.get("volume", 0.0),
+            "loop": bool(source.get("loop", False)),
+            "active": sid in active,
+            "position": _source_position(source),
+            "motion": source.get("motion"),
+        })
+    return {
+        "step": idx,
+        "active_sources": sorted(active),
+        "sources": sources,
+    }
+
+
+def _build_dashboard_summary() -> dict:
+    windows = STATE.get("windows") or []
+    current_idx = STATE.get("current_idx", -1)
+    processed_windows = windows[: current_idx + 1] if current_idx >= 0 else []
+    mental_history = STATE.get("mental_history") or []
+    scene_history = STATE.get("scene_history") or []
+
+    timeline = []
+    for idx, payload in enumerate(processed_windows):
+        features = payload.get("current_features", {}) or {}
+        mental = mental_history[idx] if idx < len(mental_history) else {}
+        scene = scene_history[idx + 1] if idx + 1 < len(scene_history) else STATE.get("scene")
+        timeline.append({
+            "step": idx,
+            "time_sec": idx * 30,
+            "window_id": payload.get("window_id", idx),
+            "time_range_sec": payload.get("time_range_sec"),
+            "rule_state": payload.get("current_rule_state"),
+            "llm_state": mental.get("llm_state"),
+            "trend": mental.get("trend"),
+            "confidence": mental.get("confidence"),
+            "bands": {
+                "delta": features.get("delta_mean"),
+                "theta": features.get("theta_mean"),
+                "alpha": features.get("alpha_mean"),
+                "beta": features.get("beta_mean"),
+                "gamma": features.get("gamma_mean"),
+            },
+            "scores": {
+                "alpha_beta_ratio": features.get("alpha_beta_ratio"),
+                "theta_beta_ratio": features.get("theta_beta_ratio"),
+                "stability_score": features.get("stability_score"),
+                "attention_score": features.get("attention_score"),
+                "relaxation_score": features.get("relaxation_score"),
+            },
+            "audio": _audio_snapshot(scene, idx),
+        })
+
+    if not timeline and STATE.get("scene"):
+        timeline.append({
+            "step": 0,
+            "time_sec": 0,
+            "window_id": None,
+            "rule_state": None,
+            "llm_state": None,
+            "trend": None,
+            "confidence": None,
+            "bands": {},
+            "scores": {},
+            "audio": _audio_snapshot(STATE.get("scene"), 0),
+        })
+
+    state_counts: Dict[str, int] = {}
+    for item in timeline:
+        state = item.get("llm_state") or item.get("rule_state") or "unknown"
+        state_counts[state] = state_counts.get(state, 0) + 1
+
+    audio_tracks: Dict[str, dict] = {}
+    for item in timeline:
+        for source in item["audio"].get("sources", []):
+            track = audio_tracks.setdefault(source["id"], {
+                "id": source["id"],
+                "layer": source.get("layer"),
+                "category": source.get("category"),
+                "points": [],
+            })
+            track["points"].append({
+                "time_sec": item["time_sec"],
+                "position": source.get("position"),
+                "volume": source.get("volume"),
+                "active": source.get("active"),
+            })
+
+    return {
+        "prompt": STATE.get("prompt"),
+        "scene_type": (STATE.get("scene") or {}).get("scene_type"),
+        "ended_at": __import__("time").time(),
+        "duration_sec": timeline[-1]["time_sec"] if timeline else 0,
+        "sample_interval_sec": 30,
+        "window_count": len(timeline),
+        "state_counts": state_counts,
+        "timeline": timeline,
+        "audio_tracks": list(audio_tracks.values()),
+        "runtime": _read_runtime_state(),
+    }
+
+
+def _score_to_100(value: Any) -> Optional[int]:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n < 0:
+        return 0
+    if n <= 1:
+        return int(round(n * 100))
+    return int(round((n / (n + 1)) * 100))
+
+
+def _mean_int(values: list) -> int:
+    nums = [float(v) for v in values if v is not None]
+    if not nums:
+        return 0
+    return int(round(sum(nums) / len(nums)))
+
+
+def _pretty_source_label(source_id: Any) -> str:
+    text = str(source_id or "Unknown Sound")
+    for prefix in ("forest_", "ocean_", "beach_", "common_"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    for suffix in ("_01", "_02", "_03"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return " ".join(part.capitalize() for part in text.replace("-", "_").split("_") if part)
+
+
+def _summary_state_label(item: dict) -> str:
+    state = str(item.get("llm_state") or item.get("rule_state") or "").lower()
+    if "relax" in state or "focus" in state:
+        return "focused"
+    if "sett" in state or "calm" in state:
+        return "calm"
+    return "distracted"
+
+
+def _load_dashboard_summary() -> dict:
+    if STATE.get("dashboard_summary"):
+        return STATE["dashboard_summary"]
+    if STATE.get("prompt") and not STATE.get("session_ended"):
+        return _build_dashboard_summary()
+    summary_file = OUTPUTS / "session_dashboard_summary.json"
+    if summary_file.exists():
+        try:
+            with open(summary_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return _build_dashboard_summary()
+    return _build_dashboard_summary()
+
+
+def _dashboard_to_session_summary(summary: dict) -> dict:
+    timeline = summary.get("timeline") or []
+    sample_interval = int(summary.get("sample_interval_sec") or 30)
+    duration = int(summary.get("duration_sec") or 0)
+    if timeline:
+        last = timeline[-1]
+        time_range = last.get("time_range_sec") or []
+        if len(time_range) >= 2:
+            duration = max(duration, int(float(time_range[1])))
+        duration = max(duration, int(last.get("time_sec") or 0) + sample_interval)
+    duration = max(duration, sample_interval if timeline else 0)
+
+    mental_timeline = []
+    attention_values = []
+    relaxation_values = []
+    stability_values = []
+    for item in timeline:
+        scores = item.get("scores") or {}
+        attention = _score_to_100(scores.get("attention_score"))
+        relaxation = _score_to_100(scores.get("relaxation_score") or scores.get("alpha_beta_ratio"))
+        stability = _score_to_100(scores.get("stability_score"))
+        if attention is not None:
+            attention_values.append(attention)
+        if relaxation is not None:
+            relaxation_values.append(relaxation)
+        if stability is not None:
+            stability_values.append(stability)
+        mental_timeline.append({
+            "time_sec": int(item.get("time_sec") or 0),
+            "attention": attention if attention is not None else 0,
+            "relaxation": relaxation if relaxation is not None else 0,
+            "stability": stability if stability is not None else 0,
+            "status": item.get("llm_state") or item.get("rule_state") or "unknown",
+            "mental_state": _summary_state_label(item),
+        })
+
+    audio_timeline = []
+    previous_active = set()
+    audio_events = []
+    for idx, item in enumerate(timeline):
+        start = int(item.get("time_sec") or idx * sample_interval)
+        if idx + 1 < len(timeline):
+            end = int(timeline[idx + 1].get("time_sec") or (start + sample_interval))
+        else:
+            end = max(duration, start + sample_interval)
+        sources = (item.get("audio") or {}).get("sources") or []
+        current_active = set()
+        for source in sources:
+            if not source.get("active", True):
+                continue
+            source_id = source.get("asset_id") or source.get("id")
+            if not source_id:
+                continue
+            layer = str(source.get("layer") or source.get("category") or "ambient").lower()
+            if layer not in {"ambient", "event", "action"}:
+                layer = "ambient"
+            current_active.add(str(source_id))
+            audio_timeline.append({
+                "layer": layer,
+                "resource": source_id,
+                "label": _pretty_source_label(source_id),
+                "start_sec": start,
+                "end_sec": end,
+            })
+            if source_id not in previous_active:
+                verb = "triggered" if layer == "action" else ("introduced" if layer == "event" else "started")
+                audio_events.append({
+                    "time_sec": start,
+                    "label": f"{_pretty_source_label(source_id)} {verb}",
+                    "type": layer,
+                    "resource": source_id,
+                })
+        previous_active = current_active
+
+    merged_audio = []
+    for item in audio_timeline:
+        if (
+            merged_audio
+            and merged_audio[-1]["resource"] == item["resource"]
+            and merged_audio[-1]["layer"] == item["layer"]
+            and merged_audio[-1]["end_sec"] == item["start_sec"]
+        ):
+            merged_audio[-1]["end_sec"] = item["end_sec"]
+        else:
+            merged_audio.append(item)
+
+    layer_totals = {"ambient": 0, "event": 0, "action": 0}
+    resource_totals: Dict[str, dict] = {}
+    for item in merged_audio:
+        layer = item["layer"]
+        dur = max(0, int(item["end_sec"]) - int(item["start_sec"]))
+        layer_totals[layer] = layer_totals.get(layer, 0) + dur
+        bucket = resource_totals.setdefault(str(item["resource"]), {
+            "label": item["label"],
+            "type": layer,
+            "duration": 0,
+        })
+        bucket["duration"] += dur
+
+    layer_total = sum(layer_totals.values()) or 1
+    ambient_pct = int(round(layer_totals.get("ambient", 0) / layer_total * 100))
+    event_pct = int(round(layer_totals.get("event", 0) / layer_total * 100))
+    action_pct = max(0, 100 - ambient_pct - event_pct)
+
+    top_items = sorted(resource_totals.values(), key=lambda x: x["duration"], reverse=True)[:5]
+    top_total = sum(item["duration"] for item in top_items) or 1
+    top_audio = [
+        {
+            "label": item["label"],
+            "percent": int(round(item["duration"] / top_total * 100)),
+            "type": item["type"],
+        }
+        for item in top_items
+    ]
+
+    first_state = timeline[0].get("llm_state") or timeline[0].get("rule_state") if timeline else "the opening state"
+    last_state = timeline[-1].get("llm_state") or timeline[-1].get("rule_state") if timeline else "the closing state"
+    top_names = ", ".join(item["label"].lower() for item in top_audio[:2]) or "the active soundscape"
+
+    return {
+        "session": {
+            "duration_sec": duration,
+            "prompt": summary.get("prompt"),
+            "scene_type": summary.get("scene_type"),
+        },
+        "metrics": {
+            "average_attention": _mean_int(attention_values),
+            "average_relaxation": _mean_int(relaxation_values),
+            "average_stability": _mean_int(stability_values),
+        },
+        "ai_summary": (
+            f"Across {len(timeline)} EEG window(s), your interpreted state moved from "
+            f"{first_state} toward {last_state}, while the system adapted the soundscape in response."
+        ),
+        "mental_timeline": mental_timeline,
+        "audio_events": audio_events[:6],
+        "audio_timeline": merged_audio,
+        "audio_composition": {
+            "ambient": ambient_pct,
+            "event": event_pct,
+            "action": action_pct,
+        },
+        "top_audio_elements": top_audio,
+        "insight": (
+            f"The strongest audio presence came from {top_names}. These active layers coincided with "
+            "the measured attention, relaxation, and stability trajectory shown above."
+        ),
+    }
+
+
+def _make_stopped_scene(scene: Optional[dict]) -> dict:
+    stopped = dict(scene or {})
+    world_state = dict(stopped.get("world_state") or {})
+    world_state["active_sources"] = []
+    world_state["session_status"] = "ended"
+    stopped["world_state"] = world_state
+    stopped["sources"] = []
+    stopped["session_status"] = "ended"
+    return stopped
 
 
 def aggregate_recent_payloads(payloads: list) -> Optional[dict]:
@@ -227,6 +587,8 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
     STATE["mental_history"] = []
     STATE["realtime_summary"] = None
     STATE["last_summary_at"] = None
+    STATE["session_ended"] = False
+    STATE["dashboard_summary"] = None
 
     if eeg_mode == "realtime":
         scene = bootstrap_scene(user_prompt)
@@ -459,6 +821,38 @@ def api_state():
     return jsonify(_state_snapshot())
 
 
+@app.get("/summary")
+def summary_page():
+    return render_template("summary.html")
+
+
+@app.get("/api/session_summary")
+def api_session_summary():
+    return jsonify(_dashboard_to_session_summary(_load_dashboard_summary()))
+
+
+@app.post("/api/end_session")
+def api_end_session():
+    summary = _build_dashboard_summary()
+    stop_realtime_session()
+
+    stopped_scene = _make_stopped_scene(STATE.get("scene"))
+    STATE["scene"] = stopped_scene
+    STATE["realtime_active"] = False
+    STATE["session_ended"] = True
+    STATE["dashboard_summary"] = summary
+
+    write_json(summary, "session_dashboard_summary.json")
+    write_json(stopped_scene, "current_unity_scene.json")
+
+    return jsonify({
+        **_state_snapshot(),
+        "active": False,
+        "ended": True,
+        "dashboard": summary,
+    })
+
+
 @app.get("/api/unity_state")
 def api_unity_state():
     scene = STATE.get("scene")
@@ -473,14 +867,7 @@ def api_unity_state():
         command_json, _ = scene_to_commands(scene, set())
         commands = command_json.get("commands", [])
 
-    runtime = None
-    runtime_file = OUTPUTS / "unity_runtime_state.json"
-    if runtime_file.exists():
-        try:
-            with open(runtime_file, "r", encoding="utf-8") as f:
-                runtime = json.load(f)
-        except Exception:
-            runtime = None
+    runtime = _read_runtime_state()
 
     snap = _state_snapshot()
     return jsonify({

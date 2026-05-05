@@ -1,17 +1,7 @@
-<script>
-/* ══════════════════════════════════════════════════════
-   V3: NeuroScape (CLAUDE.md spec) — self-contained demo
-   ══════════════════════════════════════════════════════ */
+﻿<script>
+/* V3: NeuroScape */
 const V3NS = (() => {
-  /* ── Mock EEG timeline (sampled at 30s) ── */
-  const EEG = [
-    { t:0,  bands:{alpha:.35,beta:.45,theta:.40,delta:.55,gamma:.30}, mental:{anxiety:3.2,attention:7.1,stability:7.4}, trend:{anxiety:'stable',attention:'stable',stability:'stable'} },
-    { t:30, bands:{alpha:.40,beta:.70,theta:.50,delta:.30,gamma:.40}, mental:{anxiety:8.2,attention:5.4,stability:6.0}, trend:{anxiety:'up',    attention:'down',  stability:'stable'} },
-    { t:60, bands:{alpha:.55,beta:.50,theta:.45,delta:.40,gamma:.35}, mental:{anxiety:6.0,attention:6.8,stability:7.5}, trend:{anxiety:'down',  attention:'up',    stability:'up'    } },
-    { t:90, bands:{alpha:.70,beta:.35,theta:.35,delta:.45,gamma:.25}, mental:{anxiety:3.5,attention:7.5,stability:8.2}, trend:{anxiety:'down',  attention:'up',    stability:'up'    } },
-  ];
-
-  /* ── Scene data ── */
+  /* Scene data */
   const SOUNDS = {
     ambient: ['Forest Wind Bed','Rain Ambience','Low Forest Hum','Morning Mist'],
     event:   ['Distant Bird Call','Leaves Rustling','Wind Gust','Branch Creak'],
@@ -33,7 +23,7 @@ const V3NS = (() => {
   ];
   const RECS = [
     'The spatial experience will be updated after the first 30 seconds, based on your measured mental states.',
-    'if anxiety ↑:\n  reduce event density\n  increase low-frequency ambient\n\nif attention ↓:\n  add spatial movement\n  introduce directional cues',
+    'if anxiety ->\n  reduce event density\n  increase low-frequency ambient\n\nif attention ->\n  add spatial movement\n  introduce directional cues',
     'Anxiety decreasing. Stability improving.\n  maintain gentle event layer\n  allow richer spatial movement',
     'System entering closing phase.\n  reduce density\n  fade event sounds\n  keep ambient soft',
   ];
@@ -81,7 +71,7 @@ const V3NS = (() => {
     },
   };
 
-  /* ── Spatial sources ── */
+  /* Spatial sources */
   const SRCS = [
     {color:'rgba(130,200,130,.85)', angle:45,  dist:.72, vA:.008, vD:-.001, on:false},
     {color:'rgba(100,180,210,.85)', angle:200, dist:.52, vA:-.006,vD:.002,  on:false},
@@ -97,20 +87,19 @@ const V3NS = (() => {
   const v3Trails = {};
   const v3MotionSeed = {};
 
-  /* ── State ── */
+  /* State */
   let sec=0, phaseIdx=0, playing=false;
   let timerInt=null, mapRAF=null, waveRAF=null;
   let stepInFlight=false;
+  let endingSession=false;
+  let lastEEGStep=0;
   let eegMode='{{ eeg_mode or "recorded" }}';
   let userPrompt='';
-  let v3Bands={alpha:.35,beta:.45,theta:.4,delta:.55,gamma:.3};
+  let hasRealEEG=false;
+  let v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
+  let v3BandHistory=[];
 
-  /* ── Wave buffers ── */
-  const WN=260;
-  const WB = {alpha:new Float32Array(WN),beta:new Float32Array(WN),theta:new Float32Array(WN),delta:new Float32Array(WN),gamma:new Float32Array(WN)};
-  let wPh=0, wPos=0;
-
-  /* ── Navigation ── */
+  /* Navigation */
   function goTo(page) {
     if (mapRAF)  { cancelAnimationFrame(mapRAF);  mapRAF=null;  }
     if (waveRAF) { cancelAnimationFrame(waveRAF); waveRAF=null; }
@@ -126,7 +115,7 @@ const V3NS = (() => {
     });
   }
 
-  /* ── Home submit ── */
+  /* Home submit */
   async function submit() {
     const inp = document.getElementById('v3-prompt');
     userPrompt = inp&&inp.value.trim() ? inp.value.trim() : 'I want a forest scene to get relaxed...';
@@ -142,6 +131,9 @@ const V3NS = (() => {
       if (r.ok) {
         applyState(d);
         V2.payload = null;
+        hasRealEEG = false;
+        v3Bands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
+        v3BandHistory = [];
         phaseIdx = 0;
         refreshScene();
         ok = true;
@@ -161,11 +153,13 @@ const V3NS = (() => {
     }, 650);
   }
 
-  /* ── Session init ── */
+  /* Session init */
   function initSession() {
     sec=0; phaseIdx=0; playing=true;
+    lastEEGStep=0;
     clearInterval(timerInt);
     refreshScene();
+    if (!V2.payload) hasRealEEG=false;
     renderFromPayload(V2.payload);
     renderGuidance(0); renderRec(0);
     updateSrcs(0);
@@ -186,7 +180,7 @@ const V3NS = (() => {
     });
   }
 
-  /* ── Timer ── */
+  /* Timer */
   function startTimer() {
     timerInt = setInterval(()=>{
       if (!playing) return;
@@ -194,23 +188,36 @@ const V3NS = (() => {
       const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
       const el=document.getElementById('v3-timer');
       if (el) el.textContent=`${p2(h)}:${p2(m)}:${p2(s)}`;
-      const ni=Math.min(3,Math.floor(sec/30));
+      const eegStep=Math.floor(sec/30);
+      const ni=Math.min(3,eegStep);
       if (ni!==phaseIdx) {
         phaseIdx=ni;
         refreshScene();
         renderFromPayload(V2.payload);
         renderGuidance(ni); renderRec(ni);
         updateSrcs(ni);
+      }
+      if (eegStep!==lastEEGStep) {
+        lastEEGStep=eegStep;
         processEEGStep();
       }
     },1000);
   }
   function p2(n){return String(n).padStart(2,'0');}
 
-  function togglePlay() {
-    playing=!playing;
+  async function togglePlay() {
+    if (endingSession) return;
+    endingSession=true;
+    playing=false;
     const btn=document.getElementById('v3-pp');
-    if (btn) btn.textContent=playing?'⏸':'▶';
+    if (btn) btn.textContent='...';
+    try {
+      await fetch('/api/end_session', {method:'POST'});
+    } catch(e) {
+      console.warn('V3 end session failed before summary redirect', e);
+    } finally {
+      window.location.assign('/summary');
+    }
   }
   async function processEEGStep() {
     if (stepInFlight) return;
@@ -242,7 +249,7 @@ const V3NS = (() => {
     }
   }
 
-  /* ── Scene JSON ── */
+  /* Scene JSON */
   function sceneType() {
     return V2.scene?.scene_type || V2.scene?.world_state?.scene_family || 'scene';
   }
@@ -326,13 +333,13 @@ const V3NS = (() => {
   active_audio: [
 ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   ]
-  phase: ${phaseIdx+1}/4 → ${PHASES[phaseIdx]}
-  density: ${DENSITIES[phaseIdx]} → ${DENSITIES[Math.min(3,phaseIdx+1)]}
+  phase: ${phaseIdx+1}/4 ->${PHASES[phaseIdx]}
+  density: ${DENSITIES[phaseIdx]} ->${DENSITIES[Math.min(3,phaseIdx+1)]}
   dynamics: ${phaseIdx===2?'active':'stable'}
 }`;
   }
 
-  /* ── Sound pills ── */
+  /* Sound pills */
   function renderPills() {
     const groups=groupedSceneSources();
     mkPills('v3-ambient',groups.ambient,FALLBACK_BY_CAT.ambient);
@@ -348,7 +355,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     }).join('');
   }
 
-  /* ── EEG bars ── */
+  /* EEG bars */
   const BCOLORS={alpha:'rgba(248,113,113,.8)',beta:'rgba(251,191,36,.8)',theta:'rgba(52,211,153,.8)',delta:'rgba(96,165,250,.8)',gamma:'rgba(167,139,250,.8)'};
   const BLABELS={alpha:'Alpha',beta:'Beta',theta:'Theta',delta:'Delta',gamma:'Gamma'};
   function renderBars(bands) {
@@ -360,19 +367,29 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
         <div class="v3-band-fill" data-band="${k}" data-base="${Math.max(.08,Math.min(1,v))}" style="height:${Math.round(Math.max(.08,Math.min(1,v))*66)}px;background:${BCOLORS[k]}"></div>
       </div>`).join('')}</div>`;
   }
+  function renderEEGWaiting() {
+    const el=document.getElementById('v3-eeg-bars'); if(!el) return;
+    v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
+    el.innerHTML=`<div class="v3-band-chart">${Object.keys(BLABELS).map(k=>`
+      <div class="v3-band-bar">
+        <div class="v3-band-name">${BLABELS[k]}</div>
+        <div class="v3-band-fill" data-band="${k}" data-base="0" style="height:4px;background:${BCOLORS[k]};opacity:.34"></div>
+      </div>`).join('')}</div>`;
+    sEl('v3-anx-v','--'); sHTML('v3-anx-t','--');
+    sEl('v3-att-v','--'); sHTML('v3-att-t','--');
+    sEl('v3-stb-v','--'); sHTML('v3-stb-t','--');
+  }
   function updateBandBars() {
     document.querySelectorAll('#v3-eeg-bars .v3-band-fill').forEach((el,i)=>{
       const key=el.dataset.band;
       const base=normBand(v3Bands[key] ?? Number(el.dataset.base) ?? .2);
-      const pulse=Math.sin((performance.now()*.0022)+(i*1.3))*.08 + Math.sin((performance.now()*.0047)+(i*.7))*.035;
-      const live=Math.max(.06,Math.min(1,base+pulse));
-      el.style.height=`${Math.round(live*66)}px`;
+      el.style.height=`${Math.round(Math.max(.06,base)*66)}px`;
       el.dataset.base=String(base);
     });
   }
 
-  /* ── Mental state cards ── */
-  const TMAP={up:'<span class="v3tu">↑</span>',down:'<span class="v3td">↓</span>',stable:'<span class="v3ts">—</span>'};
+  /* Mental state cards */
+  const TMAP={up:'<span class="v3tu">up</span>',down:'<span class="v3td">down</span>',stable:'<span class="v3ts">flat</span>'};
   function normBand(v) {
     const n=Number(v);
     if (!Number.isFinite(n)) return 0;
@@ -386,17 +403,25 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   function renderFromPayload(payload) {
     const f=payload?.current_features;
     if (!f) {
-      renderBars(EEG[phaseIdx]?.bands || EEG[0].bands);
-      renderMental(EEG[phaseIdx] || EEG[0]);
+      if (!hasRealEEG) renderEEGWaiting();
       return;
     }
-    renderBars({
+    hasRealEEG=true;
+    const bands = {
       alpha:normBand(f.alpha_mean),
       beta:normBand(f.beta_mean),
       theta:normBand(f.theta_mean),
       delta:normBand(f.delta_mean),
       gamma:normBand(f.gamma_mean),
-    });
+    };
+    renderBars(bands);
+    const windowId = payload.window_id ?? v3BandHistory.length;
+    if (!v3BandHistory.length || v3BandHistory[v3BandHistory.length-1].window_id !== windowId) {
+      v3BandHistory.push({window_id: windowId, time_range_sec: payload.time_range_sec, bands});
+      if (v3BandHistory.length > 80) v3BandHistory = v3BandHistory.slice(-80);
+    } else {
+      v3BandHistory[v3BandHistory.length-1] = {window_id: windowId, time_range_sec: payload.time_range_sec, bands};
+    }
     const attention=score10(f.attention_score);
     const stability=score10(f.stability_score);
     const relaxation=score10(f.relaxation_score);
@@ -414,19 +439,19 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     });
   }
   function renderMental({mental,trend}) {
-    sEl('v3-anx-v',mental.anxiety.toFixed(1));   sHTML('v3-anx-t',TMAP[trend.anxiety]  ||'—');
-    sEl('v3-att-v',mental.attention.toFixed(1));  sHTML('v3-att-t',TMAP[trend.attention]||'—');
-    sEl('v3-stb-v',mental.stability.toFixed(1));  sHTML('v3-stb-t',TMAP[trend.stability]||'—');
+    sEl('v3-anx-v',mental.anxiety.toFixed(1));   sHTML('v3-anx-t',TMAP[trend.anxiety]  ||'--');
+    sEl('v3-att-v',mental.attention.toFixed(1));  sHTML('v3-att-t',TMAP[trend.attention]||'--');
+    sEl('v3-stb-v',mental.stability.toFixed(1));  sHTML('v3-stb-t',TMAP[trend.stability]||'--');
   }
   function sEl(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
   function sHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h;}
   function renderGuidance(i){sEl('v3-guidance',V2.scene?.narration_script || GUIDANCE[i] || GUIDANCE[0]);}
   function renderRec(i){sEl('v3-rec',RECS[i]||RECS[0]);}
   function renderRecFromMental(item) {
-    sEl('v3-rec',`EEG window ${item.window_id ?? '?'}\nstate: ${item.llm_state || item.rule_state || 'unknown'}\ntrend: ${item.trend || 'stable'}\nconfidence: ${item.confidence != null ? Number(item.confidence).toFixed(2) : '–'}`);
+    sEl('v3-rec',`EEG window ${item.window_id ?? '?'}\nstate: ${item.llm_state || item.rule_state || 'unknown'}\ntrend: ${item.trend || 'stable'}\nconfidence: ${item.confidence != null ? Number(item.confidence).toFixed(2) : '--'}`);
   }
 
-  /* ── Spatial sources ── */
+  /* Spatial sources */
   function updateSrcs(pi) {
     SRCS.forEach((s,i)=>{ s.on = i<(pi===0?0:pi===1?2:3); });
   }
@@ -567,7 +592,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     Object.keys(v3Trails).forEach(id=>{ if(!seen.has(id)) delete v3Trails[id]; });
   }
 
-  /* ── Spatial map (canvas RAF loop) ── */
+  /* Spatial map (canvas RAF loop) */
   function scheduleMap() {
     const cv=document.getElementById('v3-map'); if(!cv) return;
     const parent=cv.parentElement;
@@ -594,7 +619,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
 
     /* rings */
     const ringLabels=[
-      {r:rO,lbl:'FAR',sub:'[6m,+∞]',y:sz-sz*.072},
+      {r:rO,lbl:'FAR',sub:'[6m,+鈭瀅',y:sz-sz*.072},
       {r:rM,lbl:'MIDDLE',sub:'[3m,6m]',y:Math.min(cy+rM+sz*.038, sz-sz*.17)},
       {r:rI,lbl:'NEAR',sub:'[0,3m]',y:Math.min(cy+rI+sz*.038, cy+rM-sz*.022)},
     ];
@@ -662,7 +687,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     mapRAF=requestAnimationFrame(drawMap);
   }
 
-  /* ── EEG waveform (canvas RAF loop) ── */
+  /* EEG waveform (canvas RAF loop) */
   function scheduleWave() { tickWave(); }
   function prepCanvas(canvas) {
     const rect=canvas.getBoundingClientRect();
@@ -677,14 +702,6 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     return {w:rect.width,h:rect.height,dpr};
   }
   function tickWave() {
-    const b=EEG[phaseIdx]?EEG[phaseIdx].bands:EEG[0].bands;
-    const n=()=>(Math.random()-.5)*.035;
-    WB.alpha[wPos%WN]=b.alpha*.68*Math.sin(2*Math.PI*.08*wPh)+n();
-    WB.beta [wPos%WN]=b.beta *.58*Math.sin(2*Math.PI*.15*wPh+.8)+n();
-    WB.theta[wPos%WN]=b.theta*.5 *Math.sin(2*Math.PI*.05*wPh+1.5)+n();
-    WB.delta[wPos%WN]=b.delta*.42*Math.sin(2*Math.PI*.03*wPh+2.1)+n();
-    WB.gamma[wPos%WN]=b.gamma*.38*Math.sin(2*Math.PI*.22*wPh+.3)+n();
-    wPos++; wPh++;
     const cv=document.getElementById('v3-wave'); if(!cv) { waveRAF=requestAnimationFrame(tickWave); return; }
     const ctx=cv.getContext('2d');
     const dims=prepCanvas(cv);
@@ -692,15 +709,37 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     ctx.setTransform(dims.dpr,0,0,dims.dpr,0,0);
     ctx.clearRect(0,0,W,H);
     updateBandBars();
-    [[WB.delta,'rgba(96,165,250,.5)'],[WB.theta,'rgba(52,211,153,.55)'],[WB.beta,'rgba(251,191,36,.55)'],[WB.gamma,'rgba(167,139,250,.5)'],[WB.alpha,'rgba(248,113,113,.7)']].forEach(([buf,col])=>{
-      ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.beginPath();
-      for(let i=0;i<WN;i++){const v=buf[(wPos+i)%WN],x=(i/WN)*W,y=mid+v*sc; i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+    if (!hasRealEEG) {
+      ctx.fillStyle='rgba(255,255,255,.34)';
+      ctx.textAlign='center';
+      ctx.font='400 11px Inter, Arial';
+      ctx.fillText(eegMode === 'realtime' ? 'Waiting for Muse EEG window' : 'Loading CSV EEG window', W/2, mid+4);
+      waveRAF=requestAnimationFrame(tickWave);
+      return;
+    }
+    const series = v3BandHistory.length ? v3BandHistory : [{bands:v3Bands}];
+    [
+      ['delta','rgba(96,165,250,.5)'],
+      ['theta','rgba(52,211,153,.55)'],
+      ['beta','rgba(251,191,36,.55)'],
+      ['gamma','rgba(167,139,250,.5)'],
+      ['alpha','rgba(248,113,113,.7)']
+    ].forEach(([key,col])=>{
+      ctx.strokeStyle=col; ctx.lineWidth=1.35; ctx.beginPath();
+      series.forEach((item,i)=>{
+        const v=normBand(item.bands?.[key]);
+        const x=series.length===1 ? W : (i/(series.length-1))*W;
+        const y=H-6-v*(H-12);
+        if (i===0) ctx.moveTo(0,y);
+        if (series.length===1) ctx.lineTo(W,y);
+        else ctx.lineTo(x,y);
+      });
       ctx.stroke();
     });
     waveRAF=requestAnimationFrame(tickWave);
   }
 
-  /* ── Enter key on home input ── */
+  /* Enter key on home input */
 document.addEventListener('DOMContentLoaded',()=>{
     const inp=document.getElementById('v3-prompt');
     if (inp) inp.addEventListener('keydown',e=>{ if(e.key==='Enter') submit(); });

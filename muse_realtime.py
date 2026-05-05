@@ -892,6 +892,7 @@ def run_realtime_pipeline(
     records = []
     payloads = []
     window_id = 0
+    last_processed_time_sec: Optional[float] = None
     own_server = False
 
     if osc_server is None:
@@ -899,17 +900,20 @@ def run_realtime_pipeline(
         own_server = True
 
     # 启动保存历史线程
-    save_thread = threading.Thread(target=save_history_loop, args=(stop_event or threading.Event(),), daemon=True)
+    loop_stop_event = stop_event or threading.Event()
+    save_thread = threading.Thread(target=save_history_loop, args=(loop_stop_event,), daemon=True)
     save_thread.start()
 
     try:
         while True:
-            if stop_event is not None and stop_event.is_set():
+            if loop_stop_event.is_set():
                 dprint("[LOOP] stop event received")
                 break
 
             sleep_sec = REALTIME_WARMUP_SEC if window_id == 0 else step_sec
-            time.sleep(max(1, sleep_sec))
+            if loop_stop_event.wait(timeout=max(1, sleep_sec)):
+                dprint("[LOOP] stop event received during sleep")
+                break
 
             dprint(f"[LOOP] total rows in buffer = {stream_buffer.total_rows()}")
 
@@ -929,13 +933,21 @@ def run_realtime_pipeline(
                 dprint("Signal quality not good. Skip this step.")
                 continue
 
+            latest_sample_time = float(window_df["time_sec"].max())
+            if (
+                last_processed_time_sec is not None
+                and latest_sample_time <= last_processed_time_sec + 1e-9
+            ):
+                dprint("[LOOP] no new EEG samples since last processed window.")
+                continue
+
             current_features = extract_window_features(window_df)
             current_rule_state = classify_state(current_features)
 
             previous_record = state_memory[-1] if state_memory else None
             history_summary = build_history_summary(state_memory, n=3)
 
-            window_end = float(window_df["time_sec"].max())
+            window_end = latest_sample_time
             window_start = max(0.0, window_end - window_sec)
 
             payload = build_llm_payload(
@@ -1039,10 +1051,14 @@ def run_realtime_pipeline(
                 dprint("[LOOP] reached max_windows")
                 break
 
+            last_processed_time_sec = latest_sample_time
             window_id += 1
 
     except KeyboardInterrupt:
         print("\nRealtime collection stopped by user.")
+
+    loop_stop_event.set()
+    save_thread.join(timeout=1.0)
 
     if osc_server is not None and own_server:
         try:
