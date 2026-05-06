@@ -1,6 +1,7 @@
 from __future__ import annotations
 import copy
 import json
+import math
 import os
 import threading
 from bisect import bisect_left
@@ -274,6 +275,33 @@ def _score_unit(value: Any, default: Optional[float] = None) -> Optional[float]:
     return max(0.0, min(1.0, v / 10.0))
 
 
+def _sigmoid(value: float) -> float:
+    if value >= 40:
+        return 1.0
+    if value <= -40:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-value))
+
+
+def _display_scores_from_features(features: dict) -> dict:
+    """Smooth UI/interaction scores in 0-1; raw_scores remain unchanged."""
+    def num(value: Any, default: float) -> float:
+        try:
+            n = float(value)
+            return n if math.isfinite(n) else default
+        except (TypeError, ValueError):
+            return default
+
+    theta_beta = num(features.get("theta_beta_ratio"), 0.9)
+    alpha_beta = num(features.get("relaxation_score") or features.get("alpha_beta_ratio"), 2.2)
+    stability = num(features.get("stability_score"), 6.0)
+    return {
+        "attention": _sigmoid((0.9 - abs(theta_beta)) / 0.45),
+        "relaxation": _sigmoid((alpha_beta - 2.2) / 0.9),
+        "stability": _sigmoid((stability - 6.0) / 1.6),
+    }
+
+
 def _enrich_mental_from_payload(payload: dict, mental: dict) -> dict:
     features = payload.get("current_features", {}) if isinstance(payload, dict) else {}
     deltas = payload.get("feature_deltas", {}) if isinstance(payload, dict) else {}
@@ -298,6 +326,7 @@ def _enrich_mental_from_payload(payload: dict, mental: dict) -> dict:
         "relaxation_score": features.get("relaxation_score") or features.get("alpha_beta_ratio"),
         "stability_score": features.get("stability_score"),
     }
+    enriched["display_scores"] = _display_scores_from_features(features)
 
     risk = _score_unit(enriched.get("mind_wandering_risk"))
     if risk is not None:
@@ -517,6 +546,7 @@ def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
                 "attention_score": features.get("attention_score"),
                 "relaxation_score": features.get("relaxation_score"),
             },
+            "display_scores": _display_scores_from_features(features),
             "audio": _audio_snapshot(scene, idx),
         })
 
@@ -586,11 +616,9 @@ def _score_to_100(value: Any) -> Optional[int]:
         n = float(value)
     except (TypeError, ValueError):
         return None
-    if n < 0:
-        return 0
     if n <= 1:
-        return int(round(n * 100))
-    return int(round((n / (n + 1)) * 100))
+        return max(0, min(100, int(round(n * 100))))
+    return max(0, min(100, int(round((n / 10.0) * 100))))
 
 
 def _mean_int(values: list) -> int:
@@ -692,9 +720,16 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
     stability_values = []
     for item in timeline:
         scores = item.get("scores") or {}
-        attention = _score_to_100(scores.get("attention_score"))
-        relaxation = _score_to_100(scores.get("relaxation_score") or scores.get("alpha_beta_ratio"))
-        stability = _score_to_100(scores.get("stability_score"))
+        display_scores = item.get("display_scores") or {}
+        attention = _score_to_100(display_scores.get("attention"))
+        relaxation = _score_to_100(display_scores.get("relaxation"))
+        stability = _score_to_100(display_scores.get("stability"))
+        if attention is None:
+            attention = _score_to_100(scores.get("attention_score"))
+        if relaxation is None:
+            relaxation = _score_to_100(scores.get("relaxation_score") or scores.get("alpha_beta_ratio"))
+        if stability is None:
+            stability = _score_to_100(scores.get("stability_score"))
         if attention is not None:
             attention_values.append(attention)
         if relaxation is not None:

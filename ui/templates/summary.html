@@ -245,23 +245,13 @@
       height: 330px;
       margin-top: 8px;
       border-radius: 8px;
-      overflow-x: auto;
+      overflow-x: hidden;
       overflow-y: hidden;
-      scrollbar-color: rgba(255,255,255,.24) rgba(255,255,255,.06);
-      scrollbar-width: thin;
-    }
-    .timeline-chart::-webkit-scrollbar { height: 8px; }
-    .timeline-chart::-webkit-scrollbar-track {
-      background: rgba(255,255,255,.06);
-      border-radius: 10px;
-    }
-    .timeline-chart::-webkit-scrollbar-thumb {
-      background: rgba(255,255,255,.24);
-      border-radius: 10px;
     }
     .timeline-chart svg {
       display: block;
-      min-width: 100%;
+      width: 100%;
+      min-width: 0;
     }
     .chart-label {
       fill: rgba(255,255,255,.78);
@@ -701,9 +691,10 @@
 
       if (!payload && !sources.length && !hist.length) return EMPTY_SUMMARY_DATA;
 
-      const baseAttention = scaleFeature(features.attention_score, 72);
-      const baseRelaxation = scaleFeature(features.relaxation_score, 78);
-      const baseStability = scaleFeature(features.stability_score, 65);
+      const display = smoothDisplayScores(features);
+      const baseAttention = scaleFeature(display?.attention, 72);
+      const baseRelaxation = scaleFeature(display?.relaxation, 78);
+      const baseStability = scaleFeature(display?.stability, 65);
       const points = makeTimelineFromHistory(hist, duration, baseAttention, baseRelaxation, baseStability, stepSec);
       const audioTimeline = makeAudioTimeline(sources, duration);
       const composition = makeComposition(audioTimeline);
@@ -730,7 +721,27 @@
       const n = Number(value);
       if (!Number.isFinite(n)) return fallback;
       if (n <= 1) return clamp(Math.round(n * 100), 0, 100);
-      return clamp(Math.round(n), 0, 100);
+      return clamp(Math.round((n / 10) * 100), 0, 100);
+    }
+
+    function sigmoid(value) {
+      if (value >= 40) return 1;
+      if (value <= -40) return 0;
+      return 1 / (1 + Math.exp(-value));
+    }
+
+    function smoothDisplayScores(features) {
+      if (!features) return null;
+      const thetaBeta = Number.isFinite(Number(features.theta_beta_ratio)) ? Number(features.theta_beta_ratio) : .9;
+      const alphaBetaRaw = features.relaxation_score ?? features.alpha_beta_ratio;
+      const alphaBeta = Number.isFinite(Number(alphaBetaRaw)) ? Number(alphaBetaRaw) : 2.2;
+      const stabilityRaw = features.stability_score;
+      const stability = Number.isFinite(Number(stabilityRaw)) ? Number(stabilityRaw) : 6;
+      return {
+        attention: sigmoid((.9 - Math.abs(thetaBeta)) / .45),
+        relaxation: sigmoid((alphaBeta - 2.2) / .9),
+        stability: sigmoid((stability - 6) / 1.6)
+      };
     }
 
     function makeTimelineFromHistory(history, duration, att, rel, stab, stepSec = 20) {
@@ -744,11 +755,15 @@
         const t = Math.min(duration, Math.round(windowId * stepSec));
         const state = String(h.llm_state || h.rule_state || "").toLowerCase();
         const progress = count === 1 ? 1 : i / (count - 1);
+        const display = h.display_scores || h.mental_state?.display_scores;
+        const directAttention = scaleFeature(display?.attention ?? h.attention ?? h.mental_state?.attention ?? h.raw_scores?.attention_score, NaN);
+        const directRelaxation = scaleFeature(display?.relaxation ?? h.relaxation ?? h.mental_state?.relaxation ?? h.raw_scores?.relaxation_score, NaN);
+        const directStability = scaleFeature(display?.stability ?? h.stability ?? h.mental_state?.stability ?? h.raw_scores?.stability_score, NaN);
         return {
           time_sec: t,
-          attention: clamp(Math.round(att - 12 + progress * 18 + wave(i, 5)), 0, 100),
-          relaxation: clamp(Math.round(rel - 28 + progress * 34 + wave(i, 7)), 0, 100),
-          stability: clamp(Math.round(stab - 18 + progress * 22 + wave(i, 4)), 0, 100),
+          attention: Number.isFinite(directAttention) ? directAttention : clamp(Math.round(att - 12 + progress * 18 + wave(i, 5)), 0, 100),
+          relaxation: Number.isFinite(directRelaxation) ? directRelaxation : clamp(Math.round(rel - 28 + progress * 34 + wave(i, 7)), 0, 100),
+          stability: Number.isFinite(directStability) ? directStability : clamp(Math.round(stab - 18 + progress * 22 + wave(i, 4)), 0, 100),
           mental_state: state.includes("focus") || state.includes("relax") ? "focused" : state.includes("sett") ? "calm" : "distracted"
         };
       });
@@ -867,12 +882,9 @@
       }
       const safeEvents = compactTimelineEvents(Array.isArray(events) ? events : []);
       const maxT = Math.max(duration || 1, ...safePoints.map(p => p.time_sec || 0), 1);
-      const minWidthByTime = Math.ceil(maxT / 60) * 110;
-      const minWidthByWindows = safePoints.length * 150;
-      const minWidthByEvents = safeEvents.length * 260;
-      const w = Math.max(1320, minWidthByTime + 120, minWidthByWindows + 120, minWidthByEvents + 220);
-      const h = 330;
-      const pad = { l: 42, r: 24, t: 28, b: 126 };
+      const w = 1320;
+      const h = 350;
+      const pad = { l: 42, r: 24, t: 28, b: 148 };
       const chartW = w - pad.l - pad.r;
       const chartH = h - pad.t - pad.b;
       const x = t => pad.l + (t / maxT) * chartW;
@@ -880,14 +892,12 @@
       const path = key => safePoints.map((p, i) => `${i ? "L" : "M"} ${x(p.time_sec).toFixed(1)} ${y(p[key]).toFixed(1)}`).join(" ");
       const zones = buildStateZones(safePoints, maxT);
       const yTicks = [0, 25, 50, 75, 100];
-      const tickStep = maxT <= 360 ? 60 : maxT <= 900 ? 120 : maxT <= 1800 ? 300 : 600;
-      const xTicks = [];
-      for (let t = 0; t < maxT; t += tickStep) xTicks.push(t);
-      if (xTicks[xTicks.length - 1] !== maxT) xTicks.push(maxT);
-      const markers = layoutTimelineMarkers(safeEvents.slice(0, Math.max(4, Math.floor(w / 260))), maxT, chartW, pad.l);
+      const tickCount = 6;
+      const xTicks = Array.from({ length: tickCount }, (_, i) => i === tickCount - 1 ? maxT : (maxT * i) / (tickCount - 1));
+      const markers = layoutTimelineMarkers(safeEvents.slice(0, 8), maxT, chartW, pad.l);
 
       el.innerHTML = `
-        <svg viewBox="0 0 ${w} ${h}" width="${w}" height="100%" preserveAspectRatio="xMinYMin meet" role="img" aria-label="Mental state timeline">
+        <svg viewBox="0 0 ${w} ${h}" width="100%" height="100%" preserveAspectRatio="none" role="img" aria-label="Mental state timeline">
           <rect x="${pad.l}" y="${pad.t}" width="${chartW}" height="${chartH}" fill="rgba(255,255,255,.025)" rx="5"/>
           ${zones.map(z => `<rect x="${x(z.start)}" y="${pad.t}" width="${x(z.end) - x(z.start)}" height="${chartH}" fill="${z.color}"/><text class="chart-label" x="${(x(z.start)+x(z.end))/2}" y="${pad.t + 18}" text-anchor="middle">${z.label}</text>`).join("")}
           ${yTicks.map(v => `<line class="grid-line" x1="${pad.l}" x2="${pad.l + chartW}" y1="${y(v)}" y2="${y(v)}"/><text class="axis-label" x="${pad.l - 10}" y="${y(v) + 4}" text-anchor="end">${v}</text>`).join("")}
@@ -896,16 +906,16 @@
           <path class="series-line" style="color:${COLORS.relaxation}" stroke="${COLORS.relaxation}" d="${path("relaxation")}"/>
           <path class="series-line" style="color:${COLORS.stability}" stroke="${COLORS.stability}" d="${path("stability")}"/>
           ${markers.map((m, i) => {
-            const mx = m.x, color = COLORS[normalizeLayer(m.type)];
-            const labelY = h - 12 - (m.lane * 26);
-            const iconY = h - 38 - (m.lane * 26);
+            const mx = m.x, color = markerColor(m.type);
+            const labelY = h - 12 - (m.lane * 30);
+            const iconY = h - 40 - (m.lane * 30);
             const lineEnd = iconY - 16;
             return `<g class="audio-marker">
               <line x1="${mx}" x2="${mx}" y1="${pad.t + chartH - 3}" y2="${lineEnd}" stroke="${color}"/>
               <circle class="marker-dot" cx="${mx}" cy="${pad.t + chartH - 4}" r="5" fill="${color}"/>
               <circle cx="${mx}" cy="${iconY}" r="15" fill="rgba(0,0,0,.34)" stroke="${color}"/>
               <text x="${mx}" y="${iconY + 4}">${markerSymbol(m.type)}</text>
-              <text x="${mx}" y="${labelY}">${escapeHtml(shortLabel(m.label))}</text>
+              <text x="${mx}" y="${labelY}">${escapeHtml(compactLabel(m.label))}</text>
             </g>`;
           }).join("")}
           <text class="axis-label" x="${w - 8}" y="${h - 32}" text-anchor="end">Time (min)</text>
@@ -920,8 +930,10 @@
       sorted.forEach(event => {
         const t = Number(event.time_sec);
         const last = groups[groups.length - 1];
-        if (last && Math.abs(t - last.time_sec) <= 20 && normalizeLayer(event.type) === normalizeLayer(last.type)) {
+        if (last && Math.abs(t - last.time_sec) <= 14) {
           last.items.push(event);
+          const layers = new Set(last.items.map(item => normalizeLayer(item.type)));
+          last.type = layers.size > 1 ? "mixed" : normalizeLayer(last.items[0].type);
           last.label = last.items.slice(0, 2).map(item => shortLabel(item.label)).join(" + ");
           if (last.items.length > 2) last.label += ` +${last.items.length - 2}`;
         } else {
@@ -937,8 +949,9 @@
     }
 
     function layoutTimelineMarkers(events, maxT, chartW, leftPad) {
-      const minGap = 132;
+      const minGap = 172;
       const lanes = [
+        Number.NEGATIVE_INFINITY,
         Number.NEGATIVE_INFINITY,
         Number.NEGATIVE_INFINITY,
         Number.NEGATIVE_INFINITY,
@@ -1079,8 +1092,18 @@
     function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
     function wave(i, amp) { return Math.sin(i * 1.7) * amp; }
     function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
-    function markerSymbol(type) { return normalizeLayer(type) === "event" ? "♪" : normalizeLayer(type) === "action" ? "↺" : "≋"; }
+    function markerColor(type) {
+      return type === "mixed" ? "rgba(255,255,255,.78)" : COLORS[normalizeLayer(type)];
+    }
+    function markerSymbol(type) {
+      if (type === "mixed") return "+";
+      return normalizeLayer(type) === "event" ? "♪" : normalizeLayer(type) === "action" ? "↺" : "≋";
+    }
     function shortLabel(label) { return String(label || "").replace(" sounds", "").replace(" introduced", "").replace(" triggered", ""); }
+    function compactLabel(label) {
+      const text = shortLabel(label).replace(/\s+started\b/g, "").trim();
+      return text.length > 24 ? `${text.slice(0, 22)}...` : text;
+    }
     function prettify(value) { return String(value || "").replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase()); }
     function formatTime(sec) {
       const s = Math.max(0, Math.round(sec));

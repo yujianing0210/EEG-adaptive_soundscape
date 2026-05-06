@@ -101,6 +101,8 @@ const V3NS = (() => {
   let hasRealEEG=false;
   let v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
   let v3TargetBands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
+  let v3Scores={relaxation:0,attention:0,stability:0};
+  let v3TargetScores={relaxation:0,attention:0,stability:0};
   let v3BandHistory=[];
   let eegPlaybackSamples=[];
   let eegSamplesLoading=false;
@@ -151,6 +153,8 @@ const V3NS = (() => {
         hasRealEEG = false;
         v3Bands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
         v3TargetBands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
+        v3Scores = {relaxation:0,attention:0,stability:0};
+        v3TargetScores = {relaxation:0,attention:0,stability:0};
         v3BandHistory = [];
         eegPlaybackSamples = [];
         latestMental = null;
@@ -170,7 +174,6 @@ const V3NS = (() => {
       return;
     }
     setTimeout(()=>{
-      const sp=document.getElementById('v3-sess-prompt'); if(sp) sp.value=userPrompt;
       refreshScene();
       if (ok) goTo('session');
     }, 650);
@@ -466,6 +469,11 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     delta:'rgba(147,205,240,.94)',
     gamma:'rgba(201,168,239,.94)'
   };
+  const SCORE_COLORS={
+    relaxation:'rgba(132,217,118,.94)',
+    attention:'rgba(102,144,255,.94)',
+    stability:'rgba(165,108,240,.94)'
+  };
   const BLABELS={alpha:'Alpha',beta:'Beta',theta:'Theta',delta:'Delta',gamma:'Gamma'};
   function ensureBars() {
     const el=document.getElementById('v3-eeg-bars'); if(!el) return null;
@@ -486,6 +494,8 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     const el=ensureBars(); if(!el) return;
     v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
     v3TargetBands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
+    v3Scores={relaxation:0,attention:0,stability:0};
+    v3TargetScores={relaxation:0,attention:0,stability:0};
     sEl('v3-rel-v','--');
     sEl('v3-att-v','--');
     sEl('v3-stb-v','--');
@@ -496,6 +506,11 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       const cur=Number(v3Bands[key])||0;
       const target=Number(v3TargetBands[key])||0;
       v3Bands[key]=cur+(target-cur)*0.14;
+    });
+    Object.keys(v3TargetScores).forEach(key=>{
+      const cur=Number(v3Scores[key])||0;
+      const target=Number(v3TargetScores[key])||0;
+      v3Scores[key]=cur+(target-cur)*0.14;
     });
     document.querySelectorAll('#v3-eeg-bars .v3-band-fill').forEach((el,i)=>{
       const key=el.dataset.band;
@@ -521,9 +536,48 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     if (n == null) return null;
     return Math.max(0,Math.min(1,n <= 1 ? n : n/10));
   }
+  function sigmoid(v) {
+    if (v >= 40) return 1;
+    if (v <= -40) return 0;
+    return 1 / (1 + Math.exp(-v));
+  }
+  function smoothDisplayScores(f) {
+    if (!f) return null;
+    const thetaBeta = Number.isFinite(Number(f.theta_beta_ratio)) ? Number(f.theta_beta_ratio) : .9;
+    const alphaBetaRaw = f.relaxation_score ?? f.alpha_beta_ratio;
+    const alphaBeta = Number.isFinite(Number(alphaBetaRaw)) ? Number(alphaBetaRaw) : 2.2;
+    const stabilityRaw = f.stability_score;
+    const stability = Number.isFinite(Number(stabilityRaw)) ? Number(stabilityRaw) : 6;
+    return {
+      attention:sigmoid((.9 - Math.abs(thetaBeta)) / .45),
+      relaxation:sigmoid((alphaBeta - 2.2) / .9),
+      stability:sigmoid((stability - 6) / 1.6),
+    };
+  }
+  function scoreSeriesFromFeatures(f) {
+    return smoothDisplayScores(f);
+  }
+  function bandSeriesFromFeatures(f) {
+    if (!f) return null;
+    return {
+      alpha:normBand(f.alpha_mean),
+      beta:normBand(f.beta_mean),
+      theta:normBand(f.theta_mean),
+      delta:normBand(f.delta_mean),
+      gamma:normBand(f.gamma_mean),
+    };
+  }
   function mentalScoresFromWindow(item) {
     const mental=item?.mental_state || item;
     if (!mental) return null;
+    const display=mental.display_scores || item?.display_scores;
+    if (display) {
+      return {
+        attention:mentalScale01(display.attention),
+        relaxation:mentalScale01(display.relaxation),
+        stability:mentalScale01(display.stability),
+      };
+    }
     return {
       attention:mentalScale01(mental.attention ?? item?.attention),
       relaxation:mentalScale01(mental.relaxation ?? item?.relaxation),
@@ -553,35 +607,38 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       return;
     }
     hasRealEEG=true;
-    const bands = {
-      alpha:normBand(f.alpha_mean),
-      beta:normBand(f.beta_mean),
-      theta:normBand(f.theta_mean),
-      delta:normBand(f.delta_mean),
-      gamma:normBand(f.gamma_mean),
-    };
-    renderBars(bands);
-    if (opts.immediate) v3Bands={...v3Bands,...bands};
+    const scores = scoreSeriesFromFeatures(f);
+    const bands = bandSeriesFromFeatures(f);
+    if (!scores) return;
+    if (bands) renderBars(bands);
+    v3TargetScores={...v3TargetScores,...scores};
+    if (opts.immediate) {
+      if (bands) v3Bands={...v3Bands,...bands};
+      v3Scores={...v3Scores,...scores};
+    }
     if (opts.recordHistory !== false) {
       const windowId = payload.window_id ?? payload.time_sec ?? v3BandHistory.length;
       if (!v3BandHistory.length || v3BandHistory[v3BandHistory.length-1].window_id !== windowId) {
-        v3BandHistory.push({window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands});
+        v3BandHistory.push({window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands, scores});
         if (v3BandHistory.length > 80) v3BandHistory = v3BandHistory.slice(-80);
       } else {
-        v3BandHistory[v3BandHistory.length-1] = {window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands};
+        v3BandHistory[v3BandHistory.length-1] = {window_id: windowId, time_range_sec: payload.time_range_sec, time_sec: payload.time_sec, bands, scores};
       }
     }
-    if (!latestWindowMental) renderMental(null);
+    if (!latestWindowMental) {
+      latestMental=scores;
+      renderMental(scores);
+    }
   }
   function mentalText(v) {
-    return v == null ? '--' : Number(v).toFixed(2);
+    return v == null ? '--' : String(Math.round(Math.max(0,Math.min(1,Number(v))) * 100));
   }
   function mentalTrendText(current, previous) {
     if (current == null || previous == null) return {text:'--', cls:'v3ts'};
     const delta=Number(current)-Number(previous);
-    if (!Number.isFinite(delta) || Math.abs(delta) < 0.01) return {text:'→ 0.00', cls:'v3ts'};
+    if (!Number.isFinite(delta) || Math.abs(delta) < 0.01) return {text:'→ 0', cls:'v3ts'};
     return {
-      text:`${delta > 0 ? '↑' : '↓'} ${Math.abs(delta).toFixed(2)}`,
+      text:`${delta > 0 ? '↑' : '↓'} ${Math.round(Math.abs(delta) * 100)}`,
       cls:delta > 0 ? 'v3tu' : 'v3td',
     };
   }
@@ -619,9 +676,9 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     const attentionCue = mental?.attention != null && (Number(mental.attention) < 0.45 || attentionDown);
     const relaxationLow = mental?.relaxation != null && Number(mental.relaxation) < 0.45;
     const stabilityHigh = mental?.stability != null && Number(mental.stability) >= 0.65;
-    setThreshold('v3-rel-th','v3-rel-thtxt',mental?.relaxation,0.45,relaxationLow,relaxationLow ? 'low < .45' : 'ok >= .45');
-    setThreshold('v3-att-th','v3-att-thtxt',mental?.attention,0.45,attentionCue,attentionDown ? 'cue: down' : (attentionCue ? 'cue < .45' : 'ok >= .45'));
-    setThreshold('v3-stb-th','v3-stb-thtxt',mental?.stability,0.65,stabilityHigh,stabilityHigh ? 'high >= .65' : 'below .65');
+    setThreshold('v3-rel-th','v3-rel-thtxt',mental?.relaxation,0.45,relaxationLow,relaxationLow ? 'low < 45' : 'ok >= 45');
+    setThreshold('v3-att-th','v3-att-thtxt',mental?.attention,0.45,attentionCue,attentionDown ? 'cue: down' : (attentionCue ? 'cue < 45' : 'ok >= 45'));
+    setThreshold('v3-stb-th','v3-stb-thtxt',mental?.stability,0.65,stabilityHigh,stabilityHigh ? 'high >= 65' : 'below 65');
   }
   function renderMental(mental, previous=null) {
     sEl('v3-rel-v',mentalText(mental?.relaxation));
@@ -964,17 +1021,15 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       waveRAF=requestAnimationFrame(tickWave);
       return;
     }
-    const series = v3BandHistory.length ? v3BandHistory : [{bands:v3Bands}];
+    const series = v3BandHistory.length ? v3BandHistory : [{scores:v3Scores}];
     const waveValue = (item, key) => {
-      const bands = item.bands || {};
-      if (key === 'alpha_beta') {
-        return Math.max(0, Math.min(1, (normBand(bands.alpha) + normBand(bands.beta)) * .5));
-      }
-      return normBand(bands[key]);
+      const scores = item.scores || {};
+      return normBand(scores[key]);
     };
     [
-      ['alpha_beta','rgba(255,238,24,.94)'],
-      ['theta','rgba(94,169,255,.9)']
+      ['relaxation',SCORE_COLORS.relaxation],
+      ['attention',SCORE_COLORS.attention],
+      ['stability',SCORE_COLORS.stability]
     ].forEach(([key,col])=>{
       ctx.strokeStyle=col; ctx.lineWidth=2.2; ctx.beginPath();
       series.forEach((item,i)=>{

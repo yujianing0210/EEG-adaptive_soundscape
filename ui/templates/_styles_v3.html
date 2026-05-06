@@ -105,6 +105,8 @@
       height:calc(100vh - 44px); overflow:hidden;
     }
     .v3-sh { padding:10px 18px 8px; display:flex; flex-direction:column; align-items:center; gap:8px; flex-shrink:0; }
+    #v3-session .v3-sh { padding:10px 18px 12px; }
+    #v3-session .v3-sh-row { display:none; }
     .v3-sh-title { font-size:17px; font-weight:300; letter-spacing:.23em; color:rgba(255,255,255,.66); text-transform:uppercase; }
     .v3-sh-row {
       display:flex; align-items:center; width:490px; max-width:92vw;
@@ -154,17 +156,18 @@
     .v3-bbg  { height:5px; background:rgba(255,255,255,.055); border-radius:3px; overflow:hidden; }
     .v3-bfill { height:100%; border-radius:3px; transition:width 1.6s ease; }
     .v3-bnum { font-size:8.5px; color:rgba(255,255,255,.35); text-align:right; }
-    .v3-wave-wrap { position:relative; margin-top:7px; }
+    .v3-wave-wrap { position:relative; margin-top:7px; display:flex; flex-direction:column; gap:4px; }
     #v3-wave { width:100%; height:54px; display:block; border-radius:5px; }
     .v3-wave-legend {
-      position:absolute;
-      top:4px;
-      right:6px;
+      position:static;
       display:flex;
-      flex-direction:column;
-      gap:3px;
+      order:-1;
+      justify-content:center;
+      flex-wrap:wrap;
+      gap:6px 10px;
+      margin:0 0 2px;
       color:rgba(255,255,255,.88);
-      font-size:11px;
+      font-size:9.5px;
       line-height:1;
       pointer-events:none;
       text-shadow:0 1px 8px rgba(0,0,0,.35);
@@ -507,8 +510,8 @@
       white-space:nowrap;
     }
     #v3-wave {
-      height:68px;
-      margin-top:10px;
+      height:56px;
+      margin-top:2px;
     }
     .v3-mcard-grid {
       gap:18px;
@@ -1219,6 +1222,9 @@
     }
     #v3 #v3-wave {
       background:rgba(44,58,43,.14);
+    }
+    #v3 .v3-wave-legend {
+      margin-bottom:3px;
     }
     #v3 .v3-ptitle i,
     #v3 .v3-ptitle svg {
