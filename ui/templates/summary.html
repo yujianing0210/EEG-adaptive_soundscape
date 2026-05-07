@@ -642,6 +642,12 @@
       event: "#e6a64d",
       action: "#a56cf0"
     };
+    const MENTAL_TRIGGER_THRESHOLDS = {
+      attention: 45,
+      relaxation: 45,
+      stability: 65
+    };
+    const ATTENTION_DOWN_TRIGGER_DELTA = -4;
     const EMPTY_SUMMARY_DATA = {
       no_data: true,
       session: { duration_sec: 0 },
@@ -709,7 +715,7 @@
         },
         ai_summary: makeAISummary(hist),
         mental_timeline: points,
-        audio_events: makeAudioEvents(audioTimeline),
+        audio_events: makeAudioEvents(audioTimeline, points),
         audio_timeline: audioTimeline,
         audio_composition: composition,
         top_audio_elements: topAudio,
@@ -824,16 +830,57 @@
       return all.map(item => ({ label: item.label, type: item.type, percent: Math.round(item.value / sum * 100) }));
     }
 
-    function makeAudioEvents(audioTimeline) {
+    function makeAudioEvents(audioTimeline, points = []) {
       return audioTimeline
         .filter(item => item.layer !== "ambient")
+        .filter(item => {
+          const point = mentalPointAt(points, item.start_sec);
+          if (!point) return false;
+          const previous = previousMentalPoint(points, point);
+          return triggeredLowMetrics(point, previous).length > 0;
+        })
         .slice(0, 4)
-        .map(item => ({
-          time_sec: item.start_sec,
-          label: `${item.label} ${item.layer === "action" ? "triggered" : "introduced"}`,
-          type: item.layer,
-          resource: item.resource
-        }));
+        .map(item => {
+          const point = mentalPointAt(points, item.start_sec);
+          return {
+            time_sec: item.start_sec,
+            label: `${item.label} ${item.layer === "action" ? "triggered" : "introduced"}`,
+            type: item.layer,
+            resource: item.resource,
+            low_metrics: triggeredLowMetrics(point, previousMentalPoint(points, point)),
+            threshold: MENTAL_TRIGGER_THRESHOLDS
+          };
+        });
+    }
+
+    function mentalPointAt(points, timeSec) {
+      const t = Number(timeSec) || 0;
+      let match = null;
+      (Array.isArray(points) ? points : []).forEach(point => {
+        if (Number(point.time_sec) <= t) match = point;
+      });
+      return match;
+    }
+
+    function previousMentalPoint(points, point) {
+      const safePoints = Array.isArray(points) ? points : [];
+      const idx = safePoints.indexOf(point);
+      return idx > 0 ? safePoints[idx - 1] : null;
+    }
+
+    function triggeredLowMetrics(point, previous) {
+      if (!point) return [];
+      const lows = Object.entries(MENTAL_TRIGGER_THRESHOLDS)
+        .filter(([key, threshold]) => Number(point[key]) < threshold)
+        .map(([key]) => key);
+      if (
+        previous
+        && Number(point.attention) - Number(previous.attention) <= ATTENTION_DOWN_TRIGGER_DELTA
+        && !lows.includes("attention")
+      ) {
+        lows.push("attention");
+      }
+      return lows;
     }
 
     function makeAISummary(history) {
@@ -925,13 +972,14 @@
     function compactTimelineEvents(events) {
       const sorted = [...events]
         .filter(e => Number.isFinite(Number(e.time_sec)))
-        .sort((a, b) => Number(a.time_sec) - Number(b.time_sec));
+        .sort((a, b) => Number(a.time_sec) - Number(b.time_sec) || layerPriority(a.type) - layerPriority(b.type));
       const groups = [];
       sorted.forEach(event => {
         const t = Number(event.time_sec);
         const last = groups[groups.length - 1];
         if (last && Math.abs(t - last.time_sec) <= 14) {
           last.items.push(event);
+          last.items.sort((a, b) => layerPriority(a.type) - layerPriority(b.type));
           const layers = new Set(last.items.map(item => normalizeLayer(item.type)));
           last.type = layers.size > 1 ? "mixed" : normalizeLayer(last.items[0].type);
           last.label = last.items.slice(0, 2).map(item => shortLabel(item.label)).join(" + ");
@@ -1082,6 +1130,12 @@
       if (v.includes("event")) return "event";
       if (v.includes("action") || v.includes("voice") || v.includes("guidance")) return "action";
       return "ambient";
+    }
+    function layerPriority(value) {
+      const layer = normalizeLayer(value);
+      if (layer === "event") return 0;
+      if (layer === "action") return 1;
+      return 2;
     }
 
     function average(values) {

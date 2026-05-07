@@ -83,6 +83,13 @@ SESSION_OUTPUT_PATTERNS = (
     "realtime_payload_history.json",
 )
 
+MENTAL_TRIGGER_THRESHOLDS = {
+    "attention": 45,
+    "relaxation": 45,
+    "stability": 65,
+}
+ATTENTION_DOWN_TRIGGER_DELTA = -4
+
 
 def clear_session_outputs():
     """Remove generated session artifacts so a new bootstrap starts clean."""
@@ -262,7 +269,10 @@ def _interpret_payload(payload: dict) -> dict:
         mental.setdefault("source", "realtime_llm")
     else:
         mental = interpret_window(payload)
-    return _enrich_mental_from_payload(payload, mental)
+    enriched = _enrich_mental_from_payload(payload, mental)
+    enriched["window_id"] = payload.get("window_id")
+    enriched["time_range_sec"] = payload.get("time_range_sec")
+    return enriched
 
 
 def _score_unit(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -714,6 +724,8 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
             duration = max(duration, int(last.get("time_sec") or 0) + sample_interval)
     duration = max(duration, sample_interval if timeline else 0)
 
+    low_metrics_by_time: Dict[int, list[str]] = {}
+    previous_item_scores: Optional[dict] = None
     mental_timeline = []
     attention_values = []
     relaxation_values = []
@@ -736,12 +748,29 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
             relaxation_values.append(relaxation)
         if stability is not None:
             stability_values.append(stability)
-        mental_timeline.append({
-            "time_sec": int(item.get("time_sec") or 0),
-            "end_sec": int(item.get("end_sec") or item.get("time_sec") or 0),
+        item_time = int(item.get("time_sec") or 0)
+        item_scores = {
             "attention": attention if attention is not None else 0,
             "relaxation": relaxation if relaxation is not None else 0,
             "stability": stability if stability is not None else 0,
+        }
+        low_metrics = [
+            name for name, value in item_scores.items()
+            if value < MENTAL_TRIGGER_THRESHOLDS[name]
+        ]
+        if (
+            previous_item_scores
+            and item_scores["attention"] - previous_item_scores["attention"] <= ATTENTION_DOWN_TRIGGER_DELTA
+            and "attention" not in low_metrics
+        ):
+            low_metrics.append("attention")
+        if low_metrics:
+            low_metrics_by_time[item_time] = low_metrics
+        previous_item_scores = item_scores
+        mental_timeline.append({
+            "time_sec": item_time,
+            "end_sec": int(item.get("end_sec") or item.get("time_sec") or 0),
+            **item_scores,
             "status": item.get("llm_state") or item.get("rule_state") or "unknown",
             "mental_state": _summary_state_label(item),
         })
@@ -774,13 +803,16 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
                 "start_sec": start,
                 "end_sec": end,
             })
-            if source_id not in previous_active:
+            low_metrics = low_metrics_by_time.get(start, [])
+            if source_id not in previous_active and layer != "ambient" and low_metrics:
                 verb = "triggered" if layer == "action" else ("introduced" if layer == "event" else "started")
                 audio_events.append({
                     "time_sec": start,
                     "label": f"{_pretty_source_label(source_id)} {verb}",
                     "type": layer,
                     "resource": source_id,
+                    "low_metrics": low_metrics,
+                    "threshold": MENTAL_TRIGGER_THRESHOLDS,
                 })
         previous_active = current_active
 

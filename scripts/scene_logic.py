@@ -1172,8 +1172,14 @@ def _update_scene_runtime_state(
     scene["segment_id"] = segment_id
     scene["scene_type"] = scene_family
     scene["duration_sec"] = int(scene.get("duration_sec", 60) or 60)
-    scene.setdefault("atmosphere", previous_scene.get("atmosphere", SCENE_COPY.get(scene_family, SCENE_COPY["forest"])["atmosphere"]))
-    scene.setdefault("narration_script", previous_scene.get("narration_script", ""))
+    previous_atmosphere = previous_scene.get("atmosphere", "")
+    scene["atmosphere"] = scene.get("atmosphere") or _adaptive_atmosphere(scene_family, mental_state, new_segment_index)
+    if scene["atmosphere"] == previous_atmosphere:
+        scene["atmosphere"] = _adaptive_atmosphere(scene_family, mental_state, new_segment_index)
+    previous_narration = previous_scene.get("narration_script", "")
+    scene["narration_script"] = scene.get("narration_script") or _adaptive_narration(scene_family, mental_state, new_segment_index)
+    if scene["narration_script"] == previous_narration:
+        scene["narration_script"] = _adaptive_narration(scene_family, mental_state, new_segment_index)
 
     world_state = previous_scene.get("world_state", {}).copy()
     incoming_world_state = scene.get("world_state", {})
@@ -1232,6 +1238,117 @@ def _scene_active_asset_ids(scene: Dict[str, Any]) -> List[str]:
         for src in scene.get("sources", [])
         if str(src.get("asset_id") or src.get("source_id") or "")
     ]
+
+
+def _mental_score(mental_state: Dict[str, Any], key: str, default: float = 0.5) -> float:
+    display = mental_state.get("display_scores")
+    if isinstance(display, dict) and display.get(key) is not None:
+        return _score_unit(display.get(key), default)
+    return _score_unit(mental_state.get(key), default)
+
+
+def _variant_index(mental_state: Dict[str, Any], fallback: int = 0) -> int:
+    for key in ("window_id", "step", "segment_index", "session_elapsed_sec"):
+        try:
+            return int(float(mental_state.get(key)))
+        except (TypeError, ValueError):
+            continue
+    return fallback
+
+
+def _pick_variant(options: List[str], variant: int) -> str:
+    if not options:
+        return ""
+    return options[variant % len(options)]
+
+
+def _adaptive_atmosphere(scene_family: str, mental_state: Dict[str, Any], variant: int = 0) -> str:
+    state = str(mental_state.get("state_label") or mental_state.get("llm_state") or "").lower()
+    attention = _mental_score(mental_state, "attention")
+    relaxation = _mental_score(mental_state, "relaxation")
+    stability = _mental_score(mental_state, "stability")
+    variant = _variant_index(mental_state, variant)
+    scene_family = _canonical_scene_family(scene_family)
+    if scene_family == "ocean":
+        if relaxation < 0.45:
+            return _pick_variant([
+                "close shoreline air with softened waves and steady grounding texture",
+                "low tide ambience with rounded surf and near-body calm",
+                "muted coastal air with slow foam movement and gentle grounding",
+            ], variant)
+        if attention < 0.45 or "distract" in state:
+            return _pick_variant([
+                "wide coastal air with clear distant cues and gentle side movement",
+                "open shoreline space with small directional calls over steady waves",
+                "bright sea air with sparse cues crossing the listener's edge",
+            ], variant)
+        if stability < 0.65:
+            return "balanced seaside air with slow wave rhythm and reduced motion"
+        return "open seaside air with spacious waves and calm forward focus"
+    if scene_family == "night_forest":
+        if relaxation < 0.45:
+            return _pick_variant([
+                "sheltered night forest with dim textures and near-body calm",
+                "dark forest air with softened leaves and low grounding movement",
+                "quiet night canopy with close, slow textures around the listener",
+            ], variant)
+        if attention < 0.45 or "distract" in state:
+            return "quiet night forest with subtle directional cues through the dark"
+        if stability < 0.65:
+            return "slow night forest with steady low ambience and softened movement"
+        return "deep night forest with stable air and lightly focused stillness"
+    if relaxation < 0.45:
+        return _pick_variant([
+            "soft enclosed forest air with gentle grounding movement",
+            "warm forest hush with low rustling textures close to the body",
+            "quiet green air with softened leaf motion and slower breath-like pacing",
+            "sheltered woodland space with gentle near-field movement",
+        ], variant)
+    if attention < 0.45 or "distract" in state:
+        return _pick_variant([
+            "clear forest space with small directional cues and light motion",
+            "open woodland air with tiny far cues drawing attention outward",
+            "leaf-filtered space with subtle side movement and crisp distant detail",
+        ], variant)
+    if stability < 0.65:
+        return _pick_variant([
+            "steady forest air with slower texture and balanced movement",
+            "grounded forest ambience with reduced motion and even spacing",
+            "calm woodland texture with stable layers and softened transitions",
+        ], variant)
+    return "open forest calm with spacious attention and stable organic motion"
+
+
+def _adaptive_narration(scene_family: str, mental_state: Dict[str, Any], variant: int = 0) -> str:
+    state = str(mental_state.get("state_label") or mental_state.get("llm_state") or "").lower()
+    attention = _mental_score(mental_state, "attention")
+    relaxation = _mental_score(mental_state, "relaxation")
+    stability = _mental_score(mental_state, "stability")
+    variant = _variant_index(mental_state, variant)
+    scene_family = _canonical_scene_family(scene_family)
+    place = "forest" if scene_family in {"forest", "night_forest"} else "shoreline"
+    if relaxation < 0.45:
+        return _pick_variant([
+            f"Let the {place} soften around you; follow the gentlest layer back toward ease.",
+            "Let the closest sound become your anchor, then loosen your shoulders with the next breath.",
+            "Stay with the softest texture in the scene and let the rest of the space slow down.",
+            "Allow the soundscape to hold the edges of your attention while your body settles.",
+        ], variant)
+    if attention < 0.45 or "distract" in state:
+        return _pick_variant([
+            "Notice the small directional cues, then return your attention to the space around you.",
+            "Follow one moving cue across the scene, then come back to the center of your breath.",
+            "Let the next distant sound gently point your attention outward and back again.",
+        ], variant)
+    if stability < 0.65:
+        return _pick_variant([
+            "Stay with the steady background sound as the scene settles into a more balanced rhythm.",
+            "Let the stable layer underneath the scene set the pace for the next few breaths.",
+            "Keep your attention on the slow bed of sound while the moving details become quieter.",
+        ], variant)
+    if "focus" in state:
+        return f"Keep your focus lightly open while the soundscape stays spacious and steady."
+    return f"Let this segment continue gently, with your breath and the {place} moving together."
 
 
 def _compact_asset_for_llm(asset: Dict[str, Any]) -> Dict[str, Any]:
@@ -1302,6 +1419,7 @@ def _compact_previous_scene_for_llm(scene: Dict[str, Any]) -> Dict[str, Any]:
         "scene_type": scene.get("scene_type"),
         "duration_sec": scene.get("duration_sec"),
         "atmosphere": scene.get("atmosphere"),
+        "narration_script": scene.get("narration_script"),
         "sources": compact_sources,
         "mental_state": scene.get("mental_state", {}),
         "world_state": {
@@ -1339,6 +1457,7 @@ def llm_adapt_scene(
                         "must_change_each_window": "Change at least one event/action source from previous_scene when alternatives exist; if preserving the same source, change motion, repeat, or volume.",
                         "prefer_not_recent": "Prefer event/action asset_ids not listed in previous_scene.world_state.recent_event_ids. Avoid repeating the exact same event/action asset set in consecutive windows.",
                         "attention_event_logic": "If mental_state.attention_trend_direction is down, rotate in a gentle far/middle event or subtle action cue. If it is up and attention is not low, reduce novelty and avoid adding a new attention cue.",
+                        "must_update_copy": "Return a new atmosphere and narration_script for this EEG window. Keep the scene identity, but do not copy previous_scene.atmosphere or previous_scene.narration_script exactly.",
                         "sources_per_segment": "2-5",
                         "ambient_layers": "1-2",
                         "event_and_action_may_coexist": True,
@@ -1448,9 +1567,10 @@ def adapt_scene(previous_scene: Dict[str, Any], mental_state: Dict[str, Any], li
     )
     placed = place_sources(assets, density)
 
-    atmosphere = previous_scene.get("atmosphere", "quiet forest")
+    new_segment_index = _next_segment_index(previous_scene)
+    atmosphere = _adaptive_atmosphere(current_scene_family, mental_state, new_segment_index)
     notes = previous_scene.get("world_state", {}).get("continuity_notes", "")
-    narration = previous_scene.get("narration_script", "")
+    narration = _adaptive_narration(current_scene_family, mental_state, new_segment_index)
 
     world_state = previous_scene.get("world_state", {}).copy()
     world_state["active_sources"] = [a["asset_id"] for a in assets]

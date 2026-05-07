@@ -113,6 +113,7 @@ const V3NS = (() => {
   let latestPreviousMental=null;
   let latestRecItem=null;
   let latestWindowMental=null;
+  let scenePollInFlight=false;
 
   /* Navigation */
   function goTo(page) {
@@ -303,12 +304,15 @@ const V3NS = (() => {
         applyState(d);
         phaseIdx=syncPhaseFromSession();
         if (eegMode === 'realtime') renderFromPayload(d.current_payload);
-        refreshScene();
         const latest=(d.mental_history||[]).slice(-1)[0];
         if (latest) {
+          latestWindowMental=latest;
+          latestRecItem=latest;
           renderRecFromMental(latest);
           renderMentalFromWindowOutput(latest);
         }
+        refreshScene();
+        pollSceneAdaptation(d.adaptation_pending);
       }
     } catch(e) {
       console.warn('V3 EEG step failed', e);
@@ -416,13 +420,146 @@ const V3NS = (() => {
     });
     return groups;
   }
+  function sceneAtmosphere() {
+    const st=sceneType();
+    const mental=latestWindowMental?.mental_state || latestWindowMental || V2.scene?.mental_state || {};
+    if (mental && Object.keys(mental).length) return mentalAtmosphere(mental);
+    return V2.scene?.world_state?.atmosphere || V2.scene?.atmosphere || `A ${st} soundscape is ready.`;
+  }
+  function sceneNarration() {
+    const mental=latestWindowMental?.mental_state || latestWindowMental || V2.scene?.mental_state || {};
+    if (mental && Object.keys(mental).length) return mentalNarration(mental);
+    return V2.scene?.narration_script || 'Your adaptive soundscape will respond to the EEG session.';
+  }
+  function metric01(mental, key) {
+    const display=mental.display_scores || mental.mental_state?.display_scores;
+    const raw=display?.[key] ?? mental[key] ?? mental.mental_state?.[key];
+    const n=Number(raw);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0,Math.min(1,n > 1 ? n/100 : n));
+  }
+  function mentalVariant(mental) {
+    const raw=mental?.window_id ?? mental?.step ?? mental?.session_elapsed_sec ?? V2.idx ?? 0;
+    const n=Number(raw);
+    return Number.isFinite(n) ? Math.max(0,Math.floor(n)) : 0;
+  }
+  function pickVariant(options, variant) {
+    return options[Math.max(0,variant) % options.length];
+  }
+  function mentalNarration(mental) {
+    const state=String(mental.llm_state || mental.state_label || mental.rule_state || '').toLowerCase();
+    const attention=metric01(mental,'attention');
+    const relaxation=metric01(mental,'relaxation');
+    const stability=metric01(mental,'stability');
+    const variant=mentalVariant(mental);
+    const place=sceneType().includes('ocean') || sceneType().includes('beach') ? 'shoreline' : 'forest';
+    if (relaxation != null && relaxation < .45) {
+      return pickVariant([
+        `Let the ${place} soften around you; follow the gentlest layer back toward ease.`,
+        'Let the closest sound become your anchor, then loosen your shoulders with the next breath.',
+        'Stay with the softest texture in the scene and let the rest of the space slow down.',
+        'Allow the soundscape to hold the edges of your attention while your body settles.',
+      ], variant);
+    }
+    if ((attention != null && attention < .45) || state.includes('distract')) {
+      return pickVariant([
+        'Notice the small directional cues, then return your attention to the space around you.',
+        'Follow one moving cue across the scene, then come back to the center of your breath.',
+        'Let the next distant sound gently point your attention outward and back again.',
+      ], variant);
+    }
+    if (stability != null && stability < .65) {
+      return pickVariant([
+        'Stay with the steady background sound as the scene settles into a more balanced rhythm.',
+        'Let the stable layer underneath the scene set the pace for the next few breaths.',
+        'Keep your attention on the slow bed of sound while the moving details become quieter.',
+      ], variant);
+    }
+    if (state.includes('focus')) {
+      return 'Keep your focus lightly open while the soundscape stays spacious and steady.';
+    }
+    const implication=mental.scene_implication;
+    if (typeof implication === 'string' && implication.trim()) return implication.trim();
+    if (implication && typeof implication === 'object') {
+      const text=implication.summary || implication.description || implication.note || implication.recommendation;
+      if (text) return String(text).trim();
+    }
+    return V2.scene?.narration_script || `Let this segment continue gently, with your breath and the ${place} moving together.`;
+  }
+  function mentalAtmosphere(mental) {
+    const state=String(mental.llm_state || mental.state_label || mental.rule_state || '').toLowerCase();
+    const attention=metric01(mental,'attention');
+    const relaxation=metric01(mental,'relaxation');
+    const stability=metric01(mental,'stability');
+    const variant=mentalVariant(mental);
+    const isOcean=sceneType().includes('ocean') || sceneType().includes('beach');
+    if (relaxation != null && relaxation < .45) {
+      return pickVariant(isOcean ? [
+        'close shoreline air with softened waves and steady grounding texture',
+        'low tide ambience with rounded surf and near-body calm',
+        'muted coastal air with slow foam movement and gentle grounding',
+      ] : [
+        'soft enclosed forest air with gentle grounding movement',
+        'warm forest hush with low rustling textures close to the body',
+        'quiet green air with softened leaf motion and slower breath-like pacing',
+        'sheltered woodland space with gentle near-field movement',
+      ], variant);
+    }
+    if ((attention != null && attention < .45) || state.includes('distract')) {
+      return pickVariant(isOcean ? [
+        'wide coastal air with clear distant cues and gentle side movement',
+        'open shoreline space with small directional calls over steady waves',
+        "bright sea air with sparse cues crossing the listener's edge",
+      ] : [
+        'clear forest space with small directional cues and light motion',
+        'open woodland air with tiny far cues drawing attention outward',
+        'leaf-filtered space with subtle side movement and crisp distant detail',
+      ], variant);
+    }
+    if (stability != null && stability < .65) {
+      return pickVariant(isOcean ? [
+        'balanced seaside air with slow wave rhythm and reduced motion',
+        'settled coastal texture with even surf and softened motion',
+      ] : [
+        'steady forest air with slower texture and balanced movement',
+        'grounded forest ambience with reduced motion and even spacing',
+        'calm woodland texture with stable layers and softened transitions',
+      ], variant);
+    }
+    return isOcean ? 'open seaside air with spacious waves and calm forward focus' : 'open forest calm with spacious attention and stable organic motion';
+  }
+  async function pollSceneAdaptation(pending, tries=0) {
+    if (!pending || scenePollInFlight || endingSession) return;
+    scenePollInFlight=true;
+    try {
+      await new Promise(resolve => setTimeout(resolve, tries ? 420 : 180));
+      const r=await fetch('/api/state', {cache:'no-store'});
+      if (!r.ok) return;
+      const d=await r.json();
+      applyState(d);
+      const latest=(d.mental_history||[]).slice(-1)[0];
+      if (latest) {
+        latestWindowMental=latest;
+        latestRecItem=latest;
+      }
+      refreshScene();
+      if (d.adaptation_pending && tries < 8) {
+        scenePollInFlight=false;
+        pollSceneAdaptation(d.adaptation_pending, tries+1);
+      }
+    } catch(e) {
+      console.warn('V3 scene adaptation poll failed', e);
+    } finally {
+      scenePollInFlight=false;
+    }
+  }
   function refreshScene() {
     const st=sceneType();
     applySceneVisual();
     sEl('v3-prev-env',st);
     sEl('v3-map-env',st);
-    sEl('v3-prev-desc',V2.scene?.atmosphere || `A ${st} soundscape is ready.`);
-    sEl('v3-prev-exp',V2.scene?.narration_script ? `"${V2.scene.narration_script}"` : '"Your adaptive soundscape will respond to the EEG session."');
+    sEl('v3-prev-desc',sceneAtmosphere());
+    sEl('v3-prev-exp',`"${sceneNarration()}"`);
     renderJson();
     renderPills();
     renderGuidance(phaseIdx);
@@ -434,8 +571,8 @@ const V3NS = (() => {
     const audioLines=names.slice(0,6).map(n=>`    "${n}"`).join(',\n');
     el.textContent=`Scene = {
   environment_type: "${sceneType()}"
-  atmosphere: "${scene.atmosphere || 'waiting for generated scene'}"
-  narration: "${scene.narration_script || ''}"
+  atmosphere: "${sceneAtmosphere()}"
+  narration: "${sceneNarration()}"
   active_audio: [
 ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   ]
@@ -689,7 +826,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
   }
   function sEl(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
   function sHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h;}
-  function renderGuidance(i){sEl('v3-guidance',V2.scene?.narration_script || GUIDANCE[i] || GUIDANCE[0]);}
+  function renderGuidance(i){sEl('v3-guidance',sceneNarration() || GUIDANCE[i] || GUIDANCE[0]);}
   function renderRec(i){
     if (latestRecItem) {
       renderRecFromMental(latestRecItem);

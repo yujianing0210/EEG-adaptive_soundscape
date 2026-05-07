@@ -15,3 +15,6 @@ Make spatial directionality obvious: keep ambient relatively stable and close en
 Keep birds/seagulls as orbit/circular motion.
 For event sources, set `loop: false`; for short event cues, usually use `repeat_count` 2-4 and `repeat_interval_sec` 8-16 so the event reappears within the current segment. Ambient sources can use `loop: true`.
 Return JSON for next segment.
+Every segment must also update `atmosphere` and `narration_script` to reflect the new mental_state while preserving the same scene identity. Do not copy the previous segment's exact `atmosphere` or `narration_script`.
+`atmosphere` should be a concise sensory description of the current adaptive feel, not a new location.
+`narration_script` should be one short user-facing guidance sentence suitable for display in the Scene Preview.
