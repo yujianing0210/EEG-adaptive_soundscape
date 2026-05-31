@@ -736,8 +736,20 @@
       return 1 / (1 + Math.exp(-value));
     }
 
+    function hasValidEEGBandSignal(features) {
+      if (!features) return false;
+      return ["delta_mean", "theta_mean", "alpha_mean", "beta_mean", "gamma_mean"]
+        .some(key => {
+          const n = Number(features[key]);
+          return Number.isFinite(n) && Math.abs(n) > 1e-9;
+        });
+    }
+
     function smoothDisplayScores(features) {
       if (!features) return null;
+      if (!hasValidEEGBandSignal(features)) {
+        return { attention: null, relaxation: null, stability: null, signal_quality: "insufficient_eeg_signal" };
+      }
       const thetaBeta = Number.isFinite(Number(features.theta_beta_ratio)) ? Number(features.theta_beta_ratio) : .9;
       const alphaBetaRaw = features.relaxation_score ?? features.alpha_beta_ratio;
       const alphaBeta = Number.isFinite(Number(alphaBetaRaw)) ? Number(alphaBetaRaw) : 2.2;
@@ -762,15 +774,16 @@
         const state = String(h.llm_state || h.rule_state || "").toLowerCase();
         const progress = count === 1 ? 1 : i / (count - 1);
         const display = h.display_scores || h.mental_state?.display_scores;
-        const directAttention = scaleFeature(display?.attention ?? h.attention ?? h.mental_state?.attention ?? h.raw_scores?.attention_score, NaN);
-        const directRelaxation = scaleFeature(display?.relaxation ?? h.relaxation ?? h.mental_state?.relaxation ?? h.raw_scores?.relaxation_score, NaN);
-        const directStability = scaleFeature(display?.stability ?? h.stability ?? h.mental_state?.stability ?? h.raw_scores?.stability_score, NaN);
+        const signalOk = h.signal_quality !== "insufficient_eeg_signal" && h.mental_state?.signal_quality !== "insufficient_eeg_signal";
+        const directAttention = signalOk ? scaleFeature(display?.attention ?? h.attention ?? h.mental_state?.attention ?? h.raw_scores?.attention_score, NaN) : NaN;
+        const directRelaxation = signalOk ? scaleFeature(display?.relaxation ?? h.relaxation ?? h.mental_state?.relaxation ?? h.raw_scores?.relaxation_score, NaN) : NaN;
+        const directStability = signalOk ? scaleFeature(display?.stability ?? h.stability ?? h.mental_state?.stability ?? h.raw_scores?.stability_score, NaN) : NaN;
         return {
           time_sec: t,
-          attention: Number.isFinite(directAttention) ? directAttention : clamp(Math.round(att - 12 + progress * 18 + wave(i, 5)), 0, 100),
-          relaxation: Number.isFinite(directRelaxation) ? directRelaxation : clamp(Math.round(rel - 28 + progress * 34 + wave(i, 7)), 0, 100),
-          stability: Number.isFinite(directStability) ? directStability : clamp(Math.round(stab - 18 + progress * 22 + wave(i, 4)), 0, 100),
-          mental_state: state.includes("focus") || state.includes("relax") ? "focused" : state.includes("sett") ? "calm" : "distracted"
+          attention: signalOk ? (Number.isFinite(directAttention) ? directAttention : clamp(Math.round(att - 12 + progress * 18 + wave(i, 5)), 0, 100)) : 0,
+          relaxation: signalOk ? (Number.isFinite(directRelaxation) ? directRelaxation : clamp(Math.round(rel - 28 + progress * 34 + wave(i, 7)), 0, 100)) : 0,
+          stability: signalOk ? (Number.isFinite(directStability) ? directStability : clamp(Math.round(stab - 18 + progress * 22 + wave(i, 4)), 0, 100)) : 0,
+          mental_state: signalOk ? (state.includes("focus") || state.includes("relax") ? "focused" : state.includes("sett") ? "calm" : "distracted") : "signal waiting"
         };
       });
     }

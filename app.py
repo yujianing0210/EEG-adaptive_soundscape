@@ -4,6 +4,7 @@ import json
 import math
 import os
 import threading
+import time
 from bisect import bisect_left
 from pathlib import Path
 from queue import Queue
@@ -64,6 +65,8 @@ STATE: Dict[str, Any] = {
 
 ADAPT_QUEUE = Queue()
 ADAPT_WORKER_STARTED = False
+REALTIME_CONSUMER_THREAD: Optional[threading.Thread] = None
+REALTIME_CONSUMER_LOCK = threading.Lock()
 
 OUTPUTS = Path("outputs")
 OUTPUTS.mkdir(exist_ok=True)
@@ -107,10 +110,34 @@ def current_recorded_eeg_config() -> tuple[str, int, int]:
     """Read recorded EEG config at action time so .env edits take effect."""
     load_dotenv(dotenv_path=Path(".env"), override=True)
     eeg_file = os.getenv("EEG_FILE", DEFAULT_EEG_FILE)
-    window_sec = int(os.getenv("WINDOW_SEC", WINDOW_SEC))
-    step_sec = int(os.getenv("STEP_SEC", STEP_SEC))
+    window_sec = _env_int("WINDOW_SEC", WINDOW_SEC)
+    step_sec = _env_int("STEP_SEC", STEP_SEC)
     STATE["eeg_file"] = eeg_file
     return eeg_file, window_sec, step_sec
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return int(default)
+    return int(value)
+
+
+def current_realtime_eeg_config() -> tuple[int, int, int, int]:
+    """Read realtime timing config at action time; defaults mirror recorded EEG."""
+    load_dotenv(dotenv_path=Path(".env"), override=True)
+    _, recorded_window_sec, recorded_step_sec = current_recorded_eeg_config()
+    window_sec = _env_int("REALTIME_WINDOW_SEC", recorded_window_sec)
+    step_sec = _env_int("REALTIME_STEP_SEC", recorded_step_sec)
+    warmup_sec = _env_int("REALTIME_WARMUP_SEC", min(window_sec, step_sec))
+    buffer_sec = _env_int("REALTIME_BUFFER_SEC", max(window_sec * 3, step_sec * 3))
+    return window_sec, step_sec, warmup_sec, buffer_sec
+
+
+def current_session_step_sec() -> int:
+    if STATE.get("eeg_mode") == "realtime":
+        return current_realtime_eeg_config()[1]
+    return current_recorded_eeg_config()[2]
 
 
 def ensure_windows():
@@ -262,6 +289,64 @@ def _enqueue_scene_adaptation(idx: int, mental: dict):
     })
 
 
+def _process_eeg_payload(payload: dict, session_elapsed_sec: Optional[int] = None, adapt_async: bool = True) -> dict:
+    next_idx = STATE["current_idx"] + 1
+    mental = _interpret_payload(payload)
+    write_json(mental, f"eeg_window_{next_idx:02d}_interpretation.json")
+
+    STATE["current_idx"] = next_idx
+    STATE["current_payload"] = payload
+    STATE["windows"].append(payload)
+    STATE["mental_history"].append(_mental_history_item(payload, mental, next_idx, session_elapsed_sec))
+
+    if adapt_async:
+        _enqueue_scene_adaptation(next_idx, mental)
+    else:
+        updated_scene = adapt_scene(STATE["scene"], mental)
+        write_json(updated_scene, f"eeg_window_{next_idx:02d}_scene_update.json")
+        write_json(updated_scene, "current_unity_scene.json")
+        STATE["scene"] = updated_scene
+        STATE.setdefault("scene_history", []).append(updated_scene)
+
+    return mental
+
+
+def _realtime_window_consumer(session_id: int):
+    while STATE.get("session_id") == session_id and STATE.get("realtime_active"):
+        if not STATE.get("scene"):
+            time.sleep(0.25)
+            continue
+        if not has_realtime_payloads():
+            time.sleep(0.25)
+            continue
+
+        with REALTIME_CONSUMER_LOCK:
+            if STATE.get("session_id") != session_id or not STATE.get("realtime_active"):
+                break
+            payload = pop_realtime_payload()
+            if not payload:
+                continue
+            try:
+                _process_eeg_payload(payload, adapt_async=True)
+            except Exception as exc:
+                app.logger.warning("Realtime EEG window consumer failed: %s", exc)
+        time.sleep(0.05)
+
+
+def _start_realtime_window_consumer():
+    global REALTIME_CONSUMER_THREAD
+    session_id = STATE.get("session_id")
+    if REALTIME_CONSUMER_THREAD is not None and REALTIME_CONSUMER_THREAD.is_alive():
+        return
+    REALTIME_CONSUMER_THREAD = threading.Thread(
+        target=_realtime_window_consumer,
+        args=(session_id,),
+        name="realtime-window-consumer",
+        daemon=True,
+    )
+    REALTIME_CONSUMER_THREAD.start()
+
+
 def _interpret_payload(payload: dict) -> dict:
     realtime_mental = payload.get("llm_result")
     if isinstance(realtime_mental, dict) and realtime_mental.get("state_label"):
@@ -293,8 +378,29 @@ def _sigmoid(value: float) -> float:
     return 1.0 / (1.0 + math.exp(-value))
 
 
+def _has_valid_eeg_band_signal(features: dict) -> bool:
+    bands = ("delta_mean", "theta_mean", "alpha_mean", "beta_mean", "gamma_mean")
+    values = []
+    for key in bands:
+        try:
+            value = float(features.get(key))
+        except (TypeError, ValueError):
+            value = 0.0
+        if math.isfinite(value):
+            values.append(abs(value))
+    return bool(values) and max(values) > 1e-9
+
+
 def _display_scores_from_features(features: dict) -> dict:
     """Smooth UI/interaction scores in 0-1; raw_scores remain unchanged."""
+    if not _has_valid_eeg_band_signal(features):
+        return {
+            "attention": None,
+            "relaxation": None,
+            "stability": None,
+            "signal_quality": "insufficient_eeg_signal",
+        }
+
     def num(value: Any, default: float) -> float:
         try:
             n = float(value)
@@ -319,38 +425,50 @@ def _enrich_mental_from_payload(payload: dict, mental: dict) -> dict:
         deltas = {}
 
     enriched = copy.deepcopy(mental)
+    has_signal = _has_valid_eeg_band_signal(features)
+    if not has_signal:
+        enriched["state_label"] = "insufficient_eeg_signal"
+        enriched["trend"] = "waiting_for_signal"
+        enriched["confidence"] = 0.0
+        enriched["interpretation"] = "Waiting for valid Muse EEG band values before estimating mental state."
+        enriched["scene_implication"] = "Hold the current soundscape until a valid EEG signal arrives."
+
     enriched["attention"] = _score_unit(
-        enriched.get("attention"),
+        enriched.get("attention") if has_signal else None,
         _score_unit(features.get("attention_score")),
-    )
+    ) if has_signal else None
     enriched["relaxation"] = _score_unit(
-        enriched.get("relaxation"),
+        enriched.get("relaxation") if has_signal else None,
         _score_unit(features.get("relaxation_score") or features.get("alpha_beta_ratio")),
-    )
+    ) if has_signal else None
     enriched["stability"] = _score_unit(
-        enriched.get("stability"),
+        enriched.get("stability") if has_signal else None,
         _score_unit(features.get("stability_score")),
-    )
+    ) if has_signal else None
     enriched["raw_scores"] = {
         "attention_score": features.get("attention_score"),
         "relaxation_score": features.get("relaxation_score") or features.get("alpha_beta_ratio"),
         "stability_score": features.get("stability_score"),
     }
     enriched["display_scores"] = _display_scores_from_features(features)
+    enriched["signal_quality"] = "ok" if has_signal else "insufficient_eeg_signal"
 
-    risk = _score_unit(enriched.get("mind_wandering_risk"))
+    risk = _score_unit(enriched.get("mind_wandering_risk")) if has_signal else None
     if risk is not None:
         enriched["mind_wandering_risk"] = risk
     elif enriched.get("attention") is not None:
         enriched["mind_wandering_risk"] = max(0.0, min(1.0, 1.0 - float(enriched["attention"])))
+    else:
+        enriched["mind_wandering_risk"] = None
 
     raw_attention_delta = deltas.get("attention_score_change")
     attention_delta = None
-    try:
-        raw = float(raw_attention_delta)
-        attention_delta = raw if abs(raw) <= 1.0 else raw / 10.0
-    except (TypeError, ValueError):
-        attention_delta = None
+    if has_signal:
+        try:
+            raw = float(raw_attention_delta)
+            attention_delta = raw if abs(raw) <= 1.0 else raw / 10.0
+        except (TypeError, ValueError):
+            attention_delta = None
     if attention_delta is not None:
         attention_delta = max(-1.0, min(1.0, attention_delta))
         enriched["attention_delta"] = attention_delta
@@ -402,9 +520,35 @@ def _recover_summary_inputs_from_outputs() -> tuple[list[dict], list[dict], list
     return processed_payloads, mental_items, scene_history
 
 
+def _payload_time_start(payload: dict, idx: int, fallback_step_sec: int) -> int:
+    time_range = payload.get("time_range_sec") or []
+    if len(time_range) >= 1:
+        try:
+            return int(round(float(time_range[0])))
+        except (TypeError, ValueError):
+            pass
+    return idx * int(payload.get("step_sec") or fallback_step_sec)
+
+
+def _payload_time_end(payload: dict, fallback_start: int, fallback_step_sec: int) -> int:
+    time_range = payload.get("time_range_sec") or []
+    if len(time_range) >= 2:
+        try:
+            return int(round(float(time_range[1])))
+        except (TypeError, ValueError):
+            pass
+    return fallback_start + int(payload.get("step_sec") or fallback_step_sec)
+
+
 def _mental_history_item(payload: dict, mental: dict, next_idx: int, session_elapsed_sec: Optional[int] = None) -> dict:
-    _, _, configured_step_sec = current_recorded_eeg_config()
-    elapsed = session_elapsed_sec if session_elapsed_sec is not None else next_idx * configured_step_sec
+    configured_step_sec = int(payload.get("step_sec") or current_session_step_sec())
+    if session_elapsed_sec is not None:
+        elapsed = session_elapsed_sec
+    elif payload.get("source") == "realtime_muse" or STATE.get("eeg_mode") == "realtime":
+        fallback_start = next_idx * configured_step_sec
+        elapsed = _payload_time_end(payload, fallback_start, configured_step_sec)
+    else:
+        elapsed = next_idx * configured_step_sec
     mental = _enrich_mental_from_payload(payload, mental)
     attention = mental.get("attention")
     relaxation = mental.get("relaxation")
@@ -422,6 +566,7 @@ def _mental_history_item(payload: dict, mental: dict, next_idx: int, session_ela
         "mind_wandering_risk": mental.get("mind_wandering_risk"),
         "interpretation": mental.get("interpretation"),
         "scene_implication": mental.get("scene_implication"),
+        "signal_quality": mental.get("signal_quality"),
         "mental_state": mental,
         "session_elapsed_sec": elapsed,
     }
@@ -486,9 +631,12 @@ def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
     windows = STATE.get("windows") or []
     current_idx = STATE.get("current_idx", -1)
     processed_windows = windows[: current_idx + 1] if current_idx >= 0 else []
-    mental_history = STATE.get("mental_history") or []
+    mental_history = [
+        item for item in (STATE.get("mental_history") or [])
+        if not item.get("auto_summary")
+    ]
     scene_history = STATE.get("scene_history") or []
-    _, _, configured_step_sec = current_recorded_eeg_config()
+    configured_step_sec = current_session_step_sec()
     recovered_scene_type = None
 
     if not processed_windows or not mental_history:
@@ -500,36 +648,26 @@ def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
                 scene_history = recovered_scenes
                 recovered_scene_type = recovered_scenes[-1].get("scene_type")
 
-    def _payload_time_start(payload: dict, idx: int) -> int:
-        time_range = payload.get("time_range_sec") or []
-        if len(time_range) >= 1:
-            try:
-                return int(round(float(time_range[0])))
-            except (TypeError, ValueError):
-                pass
-        return idx * configured_step_sec
-
-    def _payload_time_end(payload: dict, fallback_start: int) -> int:
-        time_range = payload.get("time_range_sec") or []
-        if len(time_range) >= 2:
-            try:
-                return int(round(float(time_range[1])))
-            except (TypeError, ValueError):
-                pass
-        return fallback_start + configured_step_sec
-
+    mental_by_window_id = {
+        str(item.get("window_id")): item
+        for item in mental_history
+        if item.get("window_id") is not None
+    }
     timeline = []
     for idx, payload in enumerate(processed_windows):
         features = payload.get("current_features", {}) or {}
-        mental = mental_history[idx] if idx < len(mental_history) else {}
+        mental = mental_by_window_id.get(str(payload.get("window_id")))
+        if mental is None:
+            mental = mental_history[idx] if idx < len(mental_history) else {}
         scene = scene_history[idx + 1] if idx + 1 < len(scene_history) else STATE.get("scene")
-        raw_csv_start = _payload_time_start(payload, idx)
-        raw_csv_end = _payload_time_end(payload, raw_csv_start)
+        raw_csv_start = _payload_time_start(payload, idx, configured_step_sec)
+        raw_csv_end = _payload_time_end(payload, raw_csv_start, configured_step_sec)
         try:
             start_sec = int(round(float(mental.get("session_elapsed_sec"))))
         except (TypeError, ValueError):
-            start_sec = idx * configured_step_sec
-        end_sec = start_sec + configured_step_sec
+            start_sec = idx * int(payload.get("step_sec") or configured_step_sec)
+        item_step_sec = int(payload.get("step_sec") or configured_step_sec)
+        end_sec = start_sec + item_step_sec
         timeline.append({
             "step": idx,
             "time_sec": start_sec,
@@ -557,6 +695,7 @@ def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
                 "relaxation_score": features.get("relaxation_score"),
             },
             "display_scores": _display_scores_from_features(features),
+            "signal_quality": (mental.get("mental_state") or {}).get("signal_quality") or mental.get("signal_quality"),
             "audio": _audio_snapshot(scene, idx),
         })
 
@@ -610,7 +749,7 @@ def _empty_dashboard_summary(reason: str = "No processed EEG windows are availab
         "scene_type": (STATE.get("scene") or {}).get("scene_type"),
         "ended_at": None,
         "duration_sec": 0,
-        "sample_interval_sec": STEP_SEC,
+        "sample_interval_sec": current_session_step_sec(),
         "window_count": 0,
         "state_counts": {},
         "timeline": [],
@@ -650,7 +789,11 @@ def _pretty_source_label(source_id: Any) -> str:
 
 
 def _summary_state_label(item: dict) -> str:
+    if item.get("signal_quality") == "insufficient_eeg_signal":
+        return "signal waiting"
     state = str(item.get("llm_state") or item.get("rule_state") or "").lower()
+    if "insufficient" in state or "signal" in state:
+        return "signal waiting"
     if "relax" in state or "focus" in state:
         return "focused"
     if "sett" in state or "calm" in state:
@@ -733,14 +876,15 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
     for item in timeline:
         scores = item.get("scores") or {}
         display_scores = item.get("display_scores") or {}
-        attention = _score_to_100(display_scores.get("attention"))
-        relaxation = _score_to_100(display_scores.get("relaxation"))
-        stability = _score_to_100(display_scores.get("stability"))
-        if attention is None:
+        signal_ok = item.get("signal_quality") != "insufficient_eeg_signal"
+        attention = _score_to_100(display_scores.get("attention")) if signal_ok else None
+        relaxation = _score_to_100(display_scores.get("relaxation")) if signal_ok else None
+        stability = _score_to_100(display_scores.get("stability")) if signal_ok else None
+        if attention is None and signal_ok:
             attention = _score_to_100(scores.get("attention_score"))
-        if relaxation is None:
+        if relaxation is None and signal_ok:
             relaxation = _score_to_100(scores.get("relaxation_score") or scores.get("alpha_beta_ratio"))
-        if stability is None:
+        if stability is None and signal_ok:
             stability = _score_to_100(scores.get("stability_score"))
         if attention is not None:
             attention_values.append(attention)
@@ -773,6 +917,7 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
             **item_scores,
             "status": item.get("llm_state") or item.get("rule_state") or "unknown",
             "mental_state": _summary_state_label(item),
+            "signal_quality": item.get("signal_quality"),
         })
 
     audio_timeline = []
@@ -1033,7 +1178,7 @@ def index():
         current_payload=current_payload,
         mental_history=STATE["mental_history"],
         eeg_path=STATE.get("eeg_file") or current_recorded_eeg_config()[0],
-        eeg_step_sec=current_recorded_eeg_config()[2],
+        eeg_step_sec=current_session_step_sec(),
         eeg_mode=STATE["eeg_mode"],
         realtime_active=STATE["realtime_active"],
     )
@@ -1076,10 +1221,17 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
     STATE["eeg_sample_file"] = None
 
     if eeg_mode == "realtime":
+        realtime_window_sec, realtime_step_sec, realtime_warmup_sec, realtime_buffer_sec = current_realtime_eeg_config()
         scene = bootstrap_scene(user_prompt)
         write_json(scene, "initial_scene.json")
         write_json(scene, "current_unity_scene.json")
-        start_realtime_session()
+        start_realtime_session(
+            window_sec=realtime_window_sec,
+            step_sec=realtime_step_sec,
+            warmup_sec=realtime_warmup_sec,
+            buffer_sec=realtime_buffer_sec,
+            use_llm=False,
+        )
 
         STATE.update({
             "prompt": user_prompt,
@@ -1089,6 +1241,7 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
         })
         STATE["realtime_summary"] = None
         STATE["last_summary_at"] = None
+        _start_realtime_window_consumer()
         return scene
 
     # refresh EEG windows from pre-recorded CSV
@@ -1127,7 +1280,7 @@ def api_bootstrap():
         "current_idx": STATE["current_idx"],
         "total_windows": len(STATE["windows"]),
         "mental_history": STATE["mental_history"],
-        "eeg_step_sec": current_recorded_eeg_config()[2],
+        "eeg_step_sec": current_session_step_sec(),
         "realtime_active": STATE["realtime_active"],
     })
 
@@ -1162,7 +1315,9 @@ def step_scene():
             return redirect(url_for("index"))
 
         payload = pop_realtime_payload()
-        STATE["windows"].append(payload)
+        _process_eeg_payload(payload, adapt_async=False)
+        flash(f"Processed window {STATE['current_idx']}.")
+        return redirect(url_for("index"))
     else:
         ensure_windows()
         next_idx = STATE["current_idx"] + 1
@@ -1271,10 +1426,14 @@ def api_step():
 
     # direction == "next"
     if STATE["eeg_mode"] == "realtime":
-        if not has_realtime_payloads():
+        if has_realtime_payloads():
+            with REALTIME_CONSUMER_LOCK:
+                payload = pop_realtime_payload()
+                if payload:
+                    _process_eeg_payload(payload, session_elapsed_sec, adapt_async=True)
+        if not has_realtime_payloads() and STATE["current_idx"] < 0:
             return jsonify({"error": "No live EEG window ready yet.", **_state_snapshot()}), 200
-        payload = pop_realtime_payload()
-        STATE["windows"].append(payload)
+        return jsonify(_state_snapshot())
     else:
         ensure_windows()
         next_idx = STATE["current_idx"] + 1
@@ -1284,13 +1443,7 @@ def api_step():
             return jsonify(snap), 200
         payload = STATE["windows"][next_idx]
 
-    next_idx = STATE["current_idx"] + 1
-    mental = _interpret_payload(payload)
-    write_json(mental, f"eeg_window_{next_idx:02d}_interpretation.json")
-    STATE["current_idx"] = next_idx
-    STATE["current_payload"] = payload
-    STATE["mental_history"].append(_mental_history_item(payload, mental, next_idx, session_elapsed_sec))
-    _enqueue_scene_adaptation(next_idx, mental)
+    _process_eeg_payload(payload, session_elapsed_sec, adapt_async=True)
 
     return jsonify(_state_snapshot())
 

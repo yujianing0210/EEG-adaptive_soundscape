@@ -678,8 +678,19 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     if (v <= -40) return 0;
     return 1 / (1 + Math.exp(-v));
   }
+  function hasValidEEGBandSignal(f) {
+    if (!f) return false;
+    return ['delta_mean','theta_mean','alpha_mean','beta_mean','gamma_mean']
+      .some(key => {
+        const n=Number(f[key]);
+        return Number.isFinite(n) && Math.abs(n) > 1e-9;
+      });
+  }
   function smoothDisplayScores(f) {
     if (!f) return null;
+    if (!hasValidEEGBandSignal(f)) {
+      return {attention:null, relaxation:null, stability:null, signal_quality:'insufficient_eeg_signal'};
+    }
     const thetaBeta = Number.isFinite(Number(f.theta_beta_ratio)) ? Number(f.theta_beta_ratio) : .9;
     const alphaBetaRaw = f.relaxation_score ?? f.alpha_beta_ratio;
     const alphaBeta = Number.isFinite(Number(alphaBetaRaw)) ? Number(alphaBetaRaw) : 2.2;
@@ -741,6 +752,11 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     const f=payload?.current_features;
     if (!f) {
       if (!hasRealEEG) renderEEGWaiting();
+      return;
+    }
+    if (!hasValidEEGBandSignal(f)) {
+      renderEEGWaiting();
+      renderMental(null);
       return;
     }
     hasRealEEG=true;

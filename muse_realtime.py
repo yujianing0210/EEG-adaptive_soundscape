@@ -19,13 +19,21 @@ load_dotenv()
 # CONFIG
 ###############################################################################
 
-OSC_IP = os.getenv("OSC_IP", "0.0.0.0")
-OSC_PORT = int(os.getenv("OSC_PORT", 5000))
 
-WINDOW_SEC = int(os.getenv("REALTIME_WINDOW_SEC", os.getenv("WINDOW_SEC", 60)))
-STEP_SEC = int(os.getenv("REALTIME_STEP_SEC", os.getenv("STEP_SEC", 20)))
-REALTIME_WARMUP_SEC = int(os.getenv("REALTIME_WARMUP_SEC", 10))
-BUFFER_SEC = int(os.getenv("REALTIME_BUFFER_SEC", 180))
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return int(default)
+    return int(value)
+
+
+OSC_IP = os.getenv("OSC_IP", "0.0.0.0")
+OSC_PORT = env_int("OSC_PORT", 5000)
+
+WINDOW_SEC = env_int("REALTIME_WINDOW_SEC", env_int("WINDOW_SEC", 60))
+STEP_SEC = env_int("REALTIME_STEP_SEC", env_int("STEP_SEC", 20))
+REALTIME_WARMUP_SEC = env_int("REALTIME_WARMUP_SEC", 10)
+BUFFER_SEC = env_int("REALTIME_BUFFER_SEC", 180)
 
 STRICT_SIGNAL_CHECK = False
 USE_LLM = True
@@ -35,10 +43,13 @@ DEBUG = False
 PRINT_TABLE_EVERY = 5
 TABLE_TAIL_N = 5
 
-RAW_OUTPUT_CSV = "sliding_window_features.csv"
-RAW_PAYLOAD_JSON = "llm_payloads.json"
-RAW_PAYLOAD_JSONL = "llm_payloads.jsonl"
-LLM_OUTPUT_CSV = "sliding_window_features_with_llm.csv"
+RAW_OUTPUT_CSV = os.path.join("outputs", "sliding_window_features.csv")
+RAW_PAYLOAD_JSON = os.path.join("outputs", "llm_payloads.json")
+RAW_PAYLOAD_JSONL = os.path.join("outputs", "llm_payloads.jsonl")
+LLM_OUTPUT_CSV = os.path.join("outputs", "sliding_window_features_with_llm.csv")
+OFFLINE_OUTPUT_CSV = os.path.join("outputs", "eeg_windows.csv")
+OFFLINE_PAYLOAD_JSON = os.path.join("outputs", "eeg_payloads.json")
+OFFLINE_PAYLOAD_JSONL = os.path.join("outputs", "eeg_payloads.jsonl")
 
 LLM_MODEL = "gpt-4o-mini"
 
@@ -62,7 +73,7 @@ def dprint(*args, **kwargs):
 # GLOBAL LOCK
 ###############################################################################
 
-buffer_lock = threading.Lock()
+buffer_lock = threading.RLock()
 
 
 ###############################################################################
@@ -109,6 +120,8 @@ osc_message_count = 0
 committed_rows_count = 0
 last_osc_address = None
 last_osc_at = None
+active_window_sec = WINDOW_SEC
+active_step_sec = STEP_SEC
 
 
 ###############################################################################
@@ -148,7 +161,15 @@ latest_frame = fresh_frame_template()
 ###############################################################################
 
 def clear_output_files():
-    for path in [RAW_OUTPUT_CSV, RAW_PAYLOAD_JSON, RAW_PAYLOAD_JSONL, LLM_OUTPUT_CSV]:
+    for path in [
+        RAW_OUTPUT_CSV,
+        RAW_PAYLOAD_JSON,
+        RAW_PAYLOAD_JSONL,
+        LLM_OUTPUT_CSV,
+        OFFLINE_OUTPUT_CSV,
+        OFFLINE_PAYLOAD_JSON,
+        OFFLINE_PAYLOAD_JSONL,
+    ]:
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -188,6 +209,13 @@ def save_payloads_jsonl(payloads: list, output_file: str = RAW_PAYLOAD_JSONL):
     with open(output_file, "w", encoding="utf-8") as f:
         for payload in payloads:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def save_offline_compatible_outputs(result_df: pd.DataFrame, payloads: list) -> None:
+    os.makedirs("outputs", exist_ok=True)
+    result_df.to_csv(OFFLINE_OUTPUT_CSV, index=False)
+    save_payloads_to_json(payloads, OFFLINE_PAYLOAD_JSON)
+    save_payloads_jsonl(payloads, OFFLINE_PAYLOAD_JSONL)
 
 
 def _safe_float_list(args):
@@ -361,6 +389,10 @@ def recent_signal_ok(window_df: pd.DataFrame) -> bool:
         if window_df[col].isna().mean() > 0.2:
             return False
 
+    band_values = window_df[required_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    if float(band_values.abs().to_numpy().max()) <= 1e-9:
+        return False
+
     if not STRICT_SIGNAL_CHECK:
         return True
 
@@ -428,6 +460,9 @@ def extract_window_features(window_df: pd.DataFrame) -> dict:
     if "Heart_Rate" in window_df.columns:
         hr = pd.to_numeric(window_df["Heart_Rate"], errors="coerce")
         feats["heart_rate_mean"] = float(hr.mean()) if not hr.isna().all() else None
+
+    band_means = [abs(feats.get(f"{band.lower()}_mean", 0.0)) for band in ["Delta", "Theta", "Alpha", "Beta", "Gamma"]]
+    feats["signal_quality"] = "ok" if max(band_means or [0.0]) > 1e-9 else "insufficient_eeg_signal"
 
     return feats
 
@@ -515,12 +550,15 @@ def build_llm_payload(
     current_rule_state: str,
     previous_record: Optional[dict],
     history_summary: list,
+    window_sec: int = WINDOW_SEC,
+    step_sec: int = STEP_SEC,
 ) -> dict:
     payload = {
+        "source": "realtime_muse",
         "window_id": window_id,
         "time_range_sec": [round(window_start, 2), round(window_end, 2)],
-        "window_length_sec": WINDOW_SEC,
-        "step_sec": STEP_SEC,
+        "window_length_sec": window_sec,
+        "step_sec": step_sec,
         "current_features": current_features,
         "current_rule_state": current_rule_state,
         "history_summary": history_summary,
@@ -886,6 +924,7 @@ def run_realtime_pipeline(
     stop_event: Optional[threading.Event] = None,
     osc_server=None,
     enable_plot: bool = ENABLE_PLOT,
+    use_llm: bool = USE_LLM,
 ) -> tuple[pd.DataFrame, list]:
     """
     Realtime version:
@@ -893,6 +932,11 @@ def run_realtime_pipeline(
     - collects windows from live OSC data
     - optionally returns after max_windows or when stop_event is set
     """
+    global active_window_sec, active_step_sec
+
+    active_window_sec = window_sec
+    active_step_sec = step_sec
+
     state_memory = []
     records = []
     payloads = []
@@ -963,10 +1007,12 @@ def run_realtime_pipeline(
                 current_rule_state=current_rule_state,
                 previous_record=previous_record,
                 history_summary=history_summary,
+                window_sec=window_sec,
+                step_sec=step_sec,
             )
 
             llm_result = None
-            if USE_LLM:
+            if use_llm:
                 try:
                     llm_result = call_llm(payload)
                 except Exception as e:
@@ -1030,9 +1076,10 @@ def run_realtime_pipeline(
 
             result_df = pd.DataFrame(records)
 
-            result_df.to_csv(RAW_OUTPUT_CSV if not USE_LLM else LLM_OUTPUT_CSV, index=False)
+            result_df.to_csv(RAW_OUTPUT_CSV if not use_llm else LLM_OUTPUT_CSV, index=False)
             save_payloads_to_json(payloads, RAW_PAYLOAD_JSON)
             save_payloads_jsonl(payloads, RAW_PAYLOAD_JSONL)
+            save_offline_compatible_outputs(result_df, payloads)
 
             if enable_plot and plotter is not None:
                 plotter.update(result_df)
@@ -1046,7 +1093,7 @@ def run_realtime_pipeline(
                     "alpha_beta_ratio",
                     "stability_score",
                 ]
-                if USE_LLM:
+                if use_llm:
                     preview_cols += ["llm_state", "llm_confidence", "llm_trend"]
 
                 available_cols = [c for c in preview_cols if c in result_df.columns]
@@ -1151,6 +1198,8 @@ def get_latest_realtime_sample() -> Optional[dict]:
     recent = stream_buffer.get_recent_df(window_sec=2.0)
     if recent.empty:
         return None
+    if not recent_signal_ok(recent):
+        return None
     try:
         features = extract_window_features(recent)
         state = classify_state(features)
@@ -1167,7 +1216,7 @@ def get_latest_realtime_sample() -> Optional[dict]:
 
 def get_realtime_diagnostics() -> dict:
     with buffer_lock:
-        rows = stream_buffer.total_rows()
+        rows = len(stream_buffer.rows)
         queue_len = len(realtime_window_queue)
         history_len = len(realtime_payload_history)
         frame_ready = {k: latest_frame.get(k) is not None for k in ["Delta", "Theta", "Alpha", "Beta", "Gamma"]}
@@ -1175,9 +1224,10 @@ def get_realtime_diagnostics() -> dict:
         return {
             "osc_ip": OSC_IP,
             "osc_port": OSC_PORT,
-            "window_sec": WINDOW_SEC,
-            "step_sec": STEP_SEC,
+            "window_sec": active_window_sec,
+            "step_sec": active_step_sec,
             "warmup_sec": REALTIME_WARMUP_SEC,
+            "buffer_sec": BUFFER_SEC,
             "buffer_rows": rows,
             "pending_window_count": queue_len,
             "history_count": history_len,
@@ -1200,13 +1250,21 @@ def start_realtime_session(
     port: int = OSC_PORT,
     window_sec: int = WINDOW_SEC,
     step_sec: int = STEP_SEC,
+    warmup_sec: int = REALTIME_WARMUP_SEC,
+    buffer_sec: int = BUFFER_SEC,
     max_windows: Optional[int] = None,
     enable_plot: bool = False,
+    use_llm: bool = False,
 ):
-    global realtime_thread, realtime_server, realtime_stop_event
+    global realtime_thread, realtime_server, realtime_stop_event, active_window_sec, active_step_sec, REALTIME_WARMUP_SEC, BUFFER_SEC
 
     if realtime_thread is not None and realtime_thread.is_alive():
         return realtime_server, realtime_thread
+
+    active_window_sec = window_sec
+    active_step_sec = step_sec
+    REALTIME_WARMUP_SEC = warmup_sec
+    BUFFER_SEC = buffer_sec
 
     reset_realtime_state()
     clear_output_files()
@@ -1224,6 +1282,7 @@ def start_realtime_session(
             "stop_event": realtime_stop_event,
             "osc_server": realtime_server,
             "enable_plot": enable_plot,
+            "use_llm": use_llm,
         },
         daemon=True,
     )
@@ -1281,6 +1340,7 @@ if __name__ == "__main__":
 
     save_payloads_to_json(payloads, RAW_PAYLOAD_JSON)
     save_payloads_jsonl(payloads, RAW_PAYLOAD_JSONL)
+    save_offline_compatible_outputs(result_df, payloads)
 
     if len(result_df) > 0:
         make_all_plots(result_df)

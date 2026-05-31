@@ -157,12 +157,13 @@ def build_history(state_memory: List[dict], n: int = 3) -> List[dict]:
 
 
 def build_payload(window_id: int, start_time: float, end_time: float, current_features: dict,
-                  current_rule_state: str, previous_record: Optional[dict], history_summary: List[dict]) -> dict:
+                  current_rule_state: str, previous_record: Optional[dict], history_summary: List[dict],
+                  window_sec: int = WINDOW_SEC, step_sec: int = STEP_SEC) -> dict:
     payload = {
         "window_id": window_id,
         "time_range_sec": [round(start_time, 2), round(end_time, 2)],
-        "window_length_sec": WINDOW_SEC,
-        "step_sec": STEP_SEC,
+        "window_length_sec": window_sec,
+        "step_sec": step_sec,
         "current_features": current_features,
         "current_rule_state": current_rule_state,
         "history_summary": history_summary,
@@ -208,7 +209,17 @@ def run_pipeline(file_path: str = DEFAULT_EEG_FILE, window_sec: int = WINDOW_SEC
         current_rule_state = classify_state(current_features)
         previous_record = state_memory[-1] if state_memory else None
         history = build_history(state_memory, n=3)
-        payload = build_payload(window_id, start_time, end_time, current_features, current_rule_state, previous_record, history)
+        payload = build_payload(
+            window_id,
+            start_time,
+            end_time,
+            current_features,
+            current_rule_state,
+            previous_record,
+            history,
+            window_sec=window_sec,
+            step_sec=step_sec,
+        )
         record = {
             "window_id": window_id,
             "start_sec": round(start_time, 2),
