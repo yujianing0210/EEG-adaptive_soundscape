@@ -50,6 +50,7 @@ LLM_OUTPUT_CSV = os.path.join("outputs", "sliding_window_features_with_llm.csv")
 OFFLINE_OUTPUT_CSV = os.path.join("outputs", "eeg_windows.csv")
 OFFLINE_PAYLOAD_JSON = os.path.join("outputs", "eeg_payloads.json")
 OFFLINE_PAYLOAD_JSONL = os.path.join("outputs", "eeg_payloads.jsonl")
+RAW_OSC_JSONL = os.path.join("outputs", "mind_monitor_osc_raw.jsonl")
 
 LLM_MODEL = "gpt-4o-mini"
 
@@ -113,11 +114,14 @@ class RealtimeEEGBuffer:
 stream_buffer = RealtimeEEGBuffer()
 realtime_window_queue = deque()
 realtime_payload_history = deque(maxlen=50)
+realtime_raw_rows = []
+raw_osc_write_queue = deque()
 realtime_thread: Optional[threading.Thread] = None
 realtime_server = None
 realtime_stop_event = threading.Event()
 osc_message_count = 0
 committed_rows_count = 0
+raw_osc_recorded_count = 0
 last_osc_address = None
 last_osc_at = None
 active_window_sec = WINDOW_SEC
@@ -169,6 +173,7 @@ def clear_output_files():
         OFFLINE_OUTPUT_CSV,
         OFFLINE_PAYLOAD_JSON,
         OFFLINE_PAYLOAD_JSONL,
+        RAW_OSC_JSONL,
     ]:
         if os.path.exists(path):
             try:
@@ -178,14 +183,17 @@ def clear_output_files():
 
 
 def reset_realtime_state():
-    global stream_buffer, latest_frame, osc_message_count, committed_rows_count, last_osc_address, last_osc_at
+    global stream_buffer, latest_frame, osc_message_count, committed_rows_count, raw_osc_recorded_count, last_osc_address, last_osc_at
 
     with buffer_lock:
         stream_buffer = RealtimeEEGBuffer(max_seconds=BUFFER_SEC)
         latest_frame = fresh_frame_template()
         realtime_payload_history.clear()
+        realtime_raw_rows.clear()
+        raw_osc_write_queue.clear()
         osc_message_count = 0
         committed_rows_count = 0
+        raw_osc_recorded_count = 0
         last_osc_address = None
         last_osc_at = None
 
@@ -248,16 +256,32 @@ def parse_band_args(args):
 ###############################################################################
 
 def debug_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     dprint(f"[DEBUG OSC] address={address} args_len={len(args)} args={args[:6]}")
 
 
-def note_osc_message(address):
-    global osc_message_count, last_osc_address, last_osc_at
+def _json_safe_osc_arg(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return {"type": "bytes", "hex": value.hex()}
+    return str(value)
+
+
+def note_osc_message(address, *args):
+    global osc_message_count, raw_osc_recorded_count, last_osc_address, last_osc_at
+    received_at = time.time()
     with buffer_lock:
         osc_message_count += 1
+        raw_osc_recorded_count += 1
         last_osc_address = address
-        last_osc_at = time.time()
+        last_osc_at = received_at
+        raw_osc_write_queue.append({
+            "received_at_unix": received_at,
+            "session_elapsed_sec": received_at - stream_buffer.start_wall_time,
+            "address": address,
+            "args": [_json_safe_osc_arg(value) for value in args],
+        })
 
 
 ###############################################################################
@@ -265,7 +289,7 @@ def note_osc_message(address):
 ###############################################################################
 
 def delta_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     val = parse_band_args(args)
     dprint("[HANDLER] delta", args[:4])
     if val is not None:
@@ -274,7 +298,7 @@ def delta_handler(address, *args):
 
 
 def theta_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     val = parse_band_args(args)
     dprint("[HANDLER] theta", args[:4])
     if val is not None:
@@ -283,7 +307,7 @@ def theta_handler(address, *args):
 
 
 def alpha_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     val = parse_band_args(args)
     dprint("[HANDLER] alpha", args[:4])
     if val is not None:
@@ -292,7 +316,7 @@ def alpha_handler(address, *args):
 
 
 def beta_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     val = parse_band_args(args)
     dprint("[HANDLER] beta", args[:4])
     if val is not None:
@@ -301,7 +325,7 @@ def beta_handler(address, *args):
 
 
 def gamma_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     val = parse_band_args(args)
     dprint("[HANDLER] gamma", args[:4])
     if val is not None:
@@ -311,7 +335,7 @@ def gamma_handler(address, *args):
 
 
 def acc_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     vals = _safe_float_list(args)
     dprint("[HANDLER] acc", args[:3])
     if len(vals) >= 3:
@@ -322,7 +346,7 @@ def acc_handler(address, *args):
 
 
 def gyro_handler(address, *args):
-    note_osc_message(address)
+    note_osc_message(address, *args)
     vals = _safe_float_list(args)
     dprint("[HANDLER] gyro", args[:3])
     if len(vals) >= 3:
@@ -365,6 +389,7 @@ def maybe_commit_row():
             ))
 
         stream_buffer.rows.append(row)
+        realtime_raw_rows.append(row.copy())
         stream_buffer._trim_locked()
         committed_rows_count += 1
 
@@ -1113,7 +1138,7 @@ def run_realtime_pipeline(
         print("\nRealtime collection stopped by user.")
 
     loop_stop_event.set()
-    save_thread.join(timeout=1.0)
+    save_thread.join(timeout=5.0)
 
     if osc_server is not None and own_server:
         try:
@@ -1173,16 +1198,45 @@ def clear_realtime_queue():
         realtime_window_queue.clear()
 
 
-def save_history_loop(stop_event: threading.Event) -> None:
-    while not stop_event.is_set():
-        time.sleep(1)  # 保存每秒
+def flush_raw_osc_events() -> int:
+    with buffer_lock:
+        events = list(raw_osc_write_queue)
+        raw_osc_write_queue.clear()
+    if not events:
+        return 0
+    try:
+        os.makedirs("outputs", exist_ok=True)
+        with open(RAW_OSC_JSONL, "a", encoding="utf-8") as f:
+            for event in events:
+                f.write(json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
+                f.write("\n")
+        return len(events)
+    except Exception:
         with buffer_lock:
-            try:
-                os.makedirs("outputs", exist_ok=True)
-                with open("outputs/realtime_payload_history.json", "w", encoding="utf-8") as f:
-                    json.dump(list(realtime_payload_history), f, indent=2)
-            except Exception as e:
-                print(f"Failed to save history: {e}")
+            raw_osc_write_queue.extendleft(reversed(events))
+        raise
+
+
+def _save_realtime_payload_history() -> None:
+    with buffer_lock:
+        history = list(realtime_payload_history)
+    os.makedirs("outputs", exist_ok=True)
+    with open("outputs/realtime_payload_history.json", "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+
+
+def save_history_loop(stop_event: threading.Event) -> None:
+    while not stop_event.wait(timeout=1.0):
+        try:
+            _save_realtime_payload_history()
+            flush_raw_osc_events()
+        except Exception as e:
+            print(f"Failed to save realtime history: {e}")
+    try:
+        _save_realtime_payload_history()
+        flush_raw_osc_events()
+    except Exception as e:
+        print(f"Failed to save final realtime history: {e}")
 
 
 def get_realtime_payload_history(max_items: int = 50) -> list:
@@ -1232,12 +1286,20 @@ def get_realtime_diagnostics() -> dict:
             "pending_window_count": queue_len,
             "history_count": history_len,
             "osc_message_count": osc_message_count,
+            "raw_osc_recorded_count": raw_osc_recorded_count,
+            "raw_osc_pending_write_count": len(raw_osc_write_queue),
             "committed_rows_count": committed_rows_count,
             "last_osc_address": last_osc_address,
             "last_osc_age_sec": last_age,
             "frame_ready": frame_ready,
             "thread_alive": realtime_thread is not None and realtime_thread.is_alive(),
         }
+
+
+def get_realtime_raw_rows() -> list[dict]:
+    """Return every committed realtime EEG band row from the active session."""
+    with buffer_lock:
+        return [row.copy() for row in realtime_raw_rows]
 
 
 def clear_realtime_history():

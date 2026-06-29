@@ -13,6 +13,15 @@ def scene_to_commands(scene_json, prev_ids=None):
     commands = []
     current_ids = set()
     segment_id = str(scene_json.get("segment_id", ""))
+    explicit_stop_ids = {
+        str(source_id)
+        for source_id in (
+            scene_json.get("stop_source_ids")
+            or (scene_json.get("world_state") or {}).get("stop_source_ids")
+            or []
+        )
+        if source_id
+    }
 
     sources = scene_json.get("sources", [])
 
@@ -73,8 +82,17 @@ def scene_to_commands(scene_json, prev_ids=None):
     # =========================
     # 删除消失的对象
     # =========================
-    for old_id in prev_ids:
+    deleted_ids = set()
+    for old_id in sorted(explicit_stop_ids):
         if old_id not in current_ids:
+            commands.append({
+                "action": "delete",
+                "id": old_id
+            })
+            deleted_ids.add(old_id)
+
+    for old_id in prev_ids:
+        if old_id not in current_ids and old_id not in deleted_ids:
             commands.append({
                 "action": "delete",
                 "id": old_id

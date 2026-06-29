@@ -96,7 +96,7 @@ const V3NS = (() => {
   let eegSampleInFlight=false;
   let endingSession=false;
   let lastEEGStep=0;
-  let eegMode='{{ eeg_mode or "recorded" }}';
+  let eegMode='{{ eeg_mode or "realtime" }}';
   let userPrompt='';
   let hasRealEEG=false;
   let v3Bands={alpha:0,beta:0,theta:0,delta:0,gamma:0};
@@ -109,6 +109,9 @@ const V3NS = (() => {
   let sessionStartMs=0;
   let lastRealtimeSamplePoll=0;
   let lastPlaybackHistoryAt=-1;
+  let meditationDurationSec=600;
+  let eegTimerStarted=false;
+  let eegStartedNoticeSent=false;
   let latestMental=null;
   let latestPreviousMental=null;
   let latestRecItem=null;
@@ -134,14 +137,21 @@ const V3NS = (() => {
   /* Home submit */
   async function submit() {
     const inp = document.getElementById('v3-prompt');
+    const durationInput = document.getElementById('v3-duration-minutes');
     userPrompt = inp&&inp.value.trim() ? inp.value.trim() : 'I want a forest scene to get relaxed...';
+    const requestedMinutes=Number(durationInput?.value);
+    const durationMinutes=Number.isFinite(requestedMinutes)
+      ? Math.max(1,Math.min(180,requestedMinutes))
+      : 10;
+    if (durationInput) durationInput.value=String(Math.round(durationMinutes));
+    meditationDurationSec=Math.round(durationMinutes*60);
     goTo('loading');
     let ok = false;
     try {
       const r = await fetch('/api/bootstrap', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({prompt:userPrompt, eeg_mode:eegMode})
+        body: JSON.stringify({prompt:userPrompt, eeg_mode:eegMode, duration_minutes:durationMinutes})
       });
       const d = await r.json();
       if (r.ok) {
@@ -151,6 +161,7 @@ const V3NS = (() => {
         V2.idx = -1;
         V2.total = Number(d.total_windows) || 0;
         eegStepSec = Number(d.eeg_step_sec) || eegStepSec;
+        meditationDurationSec = Number(d.meditation_duration_sec) || meditationDurationSec;
         hasRealEEG = false;
         v3Bands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
         v3TargetBands = {alpha:0,beta:0,theta:0,delta:0,gamma:0};
@@ -185,11 +196,14 @@ const V3NS = (() => {
     sec=0; phaseIdx=0; playing=true;
     lastEEGStep=0;
     endingSession=false;
-    sessionStartMs=performance.now();
+    sessionStartMs=0;
+    eegTimerStarted=false;
+    eegStartedNoticeSent=false;
     lastPlaybackHistoryAt=-1;
     latestRecItem = V2.idx >= 0 && Array.isArray(V2.history) && V2.history.length ? V2.history[V2.history.length-1] : null;
     latestWindowMental = latestRecItem;
     clearInterval(timerInt);
+    renderTimer();
     refreshScene();
     if (!V2.payload) hasRealEEG=false;
     renderEEGWaiting();
@@ -216,13 +230,51 @@ const V3NS = (() => {
   }
 
   /* Timer */
+  function renderTimer() {
+    const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
+    const el=document.getElementById('v3-timer');
+    if (el) el.textContent=`${p2(h)}:${p2(m)}:${p2(s)}`;
+    const meta=document.getElementById('v3-timer-meta');
+    if (!meta) return;
+    const targetMinutes=Math.round(meditationDurationSec/60);
+    if (!eegTimerStarted) {
+      meta.textContent=`Waiting for EEG · ${targetMinutes} min target`;
+      return;
+    }
+    const remaining=Math.max(0,meditationDurationSec-sec);
+    meta.textContent=`EEG meditation time · ${formatClock(remaining)} remaining`;
+  }
+  function formatClock(totalSec) {
+    const total=Math.max(0,Math.round(totalSec));
+    const h=Math.floor(total/3600), m=Math.floor((total%3600)/60), s=total%60;
+    return h ? `${h}:${p2(m)}:${p2(s)}` : `${p2(m)}:${p2(s)}`;
+  }
+  function markEEGReceived() {
+    if (eegTimerStarted || endingSession) return;
+    eegTimerStarted=true;
+    sessionStartMs=performance.now();
+    sec=0;
+    renderTimer();
+    if (!eegStartedNoticeSent) {
+      eegStartedNoticeSent=true;
+      fetch('/api/eeg_started', {method:'POST'}).catch(e=>{
+        console.warn('Could not record EEG timer start', e);
+      });
+    }
+  }
   function startTimer() {
     timerInt = setInterval(()=>{
       if (!playing) return;
-      sec++;
-      const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
-      const el=document.getElementById('v3-timer');
-      if (el) el.textContent=`${p2(h)}:${p2(m)}:${p2(s)}`;
+      if (eegTimerStarted && sessionStartMs) {
+        sec=Math.max(0,Math.floor((performance.now()-sessionStartMs)/1000));
+      }
+      renderTimer();
+      if (eegMode === 'realtime') refreshEEGSample();
+      if (!eegTimerStarted) return;
+      if (sec >= meditationDurationSec) {
+        finishSessionAndRedirect('duration_complete');
+        return;
+      }
       const eegStep=Math.floor(sec/eegStepSec);
       const ni=syncPhaseFromSession();
       if (ni!==phaseIdx) {
@@ -231,7 +283,6 @@ const V3NS = (() => {
         renderGuidance(ni); renderRec(ni);
         updateSrcs(ni);
       }
-      if (eegMode === 'realtime') refreshEEGSample();
       if (eegStep!==lastEEGStep) {
         lastEEGStep=eegStep;
         processEEGStep();
@@ -253,10 +304,10 @@ const V3NS = (() => {
   }
 
   async function togglePlay() {
-    await finishSessionAndRedirect();
+    await finishSessionAndRedirect('manual');
   }
 
-  async function finishSessionAndRedirect() {
+  async function finishSessionAndRedirect(endReason='manual') {
     if (endingSession) return;
     endingSession=true;
     playing=false;
@@ -267,7 +318,11 @@ const V3NS = (() => {
       await fetch('/api/end_session', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({elapsed_sec:sec})
+        body: JSON.stringify({
+          elapsed_sec:sec,
+          end_reason:endReason,
+          meditation_duration_sec:meditationDurationSec
+        })
       });
     } catch(e) {
       console.warn('V3 end session failed before summary redirect', e);
@@ -759,6 +814,7 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
       renderMental(null);
       return;
     }
+    markEEGReceived();
     hasRealEEG=true;
     const scores = scoreSeriesFromFeatures(f);
     const bands = bandSeriesFromFeatures(f);
@@ -806,32 +862,40 @@ ${audioLines}${names.length>6 ? ',\n    ...' : ''}
     setTrend('v3-att-tr', mentalTrendText(mental?.attention, previous?.attention));
     setTrend('v3-stb-tr', mentalTrendText(mental?.stability, previous?.stability));
   }
-  function setThreshold(id, labelId, value, threshold, active, text, marker=threshold) {
+  function setThreshold(id, labelId, value, threshold, active, text, marker=threshold, positiveActive=false) {
     const bar=document.getElementById(id);
     const label=document.getElementById(labelId);
     const n=Number(value);
     const pct=Number.isFinite(n) ? Math.max(0,Math.min(100,n*100)) : 0;
+    const hasState=active !== null;
     if (bar) {
       const fill=bar.querySelector('span');
       const mark=bar.querySelector('i');
       if (fill) fill.style.width=`${pct}%`;
       if (mark) mark.style.left=`${Math.max(0,Math.min(100,marker*100))}%`;
-      bar.classList.toggle('on', !!active);
+      bar.classList.toggle('on', hasState && !!active);
+      bar.classList.toggle('fail', hasState && positiveActive && !active);
     }
     if (label) {
       label.textContent=text;
-      label.className=`v3-thtxt ${active ? 'on' : 'good'}`;
+      const stateClass=!hasState ? '' : positiveActive
+        ? (active ? 'good' : 'on')
+        : (active ? 'on' : 'good');
+      label.className=`v3-thtxt ${stateClass}`;
     }
   }
   function renderMentalThresholds(mental, previous) {
-    const attentionDelta = mental?.attention != null && previous?.attention != null ? Number(mental.attention)-Number(previous.attention) : 0;
+    const hasAttention=mental?.attention != null && Number.isFinite(Number(mental.attention));
+    const hasRelaxation=mental?.relaxation != null && Number.isFinite(Number(mental.relaxation));
+    const hasStability=mental?.stability != null && Number.isFinite(Number(mental.stability));
+    const attentionDelta = hasAttention && previous?.attention != null ? Number(mental.attention)-Number(previous.attention) : 0;
     const attentionDown = Number.isFinite(attentionDelta) && attentionDelta < -0.04;
-    const attentionCue = mental?.attention != null && (Number(mental.attention) < 0.45 || attentionDown);
-    const relaxationLow = mental?.relaxation != null && Number(mental.relaxation) < 0.45;
-    const stabilityHigh = mental?.stability != null && Number(mental.stability) >= 0.65;
-    setThreshold('v3-rel-th','v3-rel-thtxt',mental?.relaxation,0.45,relaxationLow,relaxationLow ? 'low < 45' : 'ok >= 45');
-    setThreshold('v3-att-th','v3-att-thtxt',mental?.attention,0.45,attentionCue,attentionDown ? 'cue: down' : (attentionCue ? 'cue < 45' : 'ok >= 45'));
-    setThreshold('v3-stb-th','v3-stb-thtxt',mental?.stability,0.65,stabilityHigh,stabilityHigh ? 'high >= 65' : 'below 65');
+    const attentionCue = hasAttention ? (Number(mental.attention) < 0.45 || attentionDown) : null;
+    const relaxationLow = hasRelaxation ? Number(mental.relaxation) < 0.45 : null;
+    const stabilityHigh = hasStability ? Number(mental.stability) >= 0.65 : null;
+    setThreshold('v3-rel-th','v3-rel-thtxt',mental?.relaxation,0.45,relaxationLow,!hasRelaxation ? '--' : (relaxationLow ? 'low < 45' : 'ok >= 45'));
+    setThreshold('v3-att-th','v3-att-thtxt',mental?.attention,0.45,attentionCue,!hasAttention ? '--' : (attentionDown ? 'cue: down' : (attentionCue ? 'cue < 45' : 'ok >= 45')));
+    setThreshold('v3-stb-th','v3-stb-thtxt',mental?.stability,0.65,stabilityHigh,!hasStability ? '--' : (stabilityHigh ? 'high >= 65' : 'below 65'),0.65,true);
   }
   function renderMental(mental, previous=null) {
     sEl('v3-rel-v',mentalText(mental?.relaxation));

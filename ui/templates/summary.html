@@ -18,6 +18,8 @@
       --muted: rgba(255,255,255,.64);
       --line: rgba(255,255,255,.16);
       --glass: rgba(12, 30, 18, .46);
+      --timeline-axis-left: 115px;
+      --summary-scene-img: url("https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=2400&q=88");
     }
 
     html, body { min-height: 100%; }
@@ -28,7 +30,7 @@
         linear-gradient(180deg, rgba(5,18,10,.58), rgba(4,14,8,.9)),
         radial-gradient(circle at 55% 4%, rgba(205,235,210,.22), transparent 34%),
         radial-gradient(circle at 82% 50%, rgba(120,170,110,.18), transparent 26%),
-        url("https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=2400&q=88") center/cover fixed no-repeat;
+        var(--summary-scene-img) center/cover fixed no-repeat;
       overflow-x: hidden;
     }
 
@@ -278,15 +280,25 @@
     .breakdown-section {
       margin-top: 10px;
       padding: 14px 20px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
     }
     .breakdown-grid {
       display: grid;
-      grid-template-columns: 1.7fr .9fr 1fr .68fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 18px;
       margin-top: 10px;
+      min-width: 0;
+    }
+    .breakdown-panel:first-child {
+      grid-column: 1 / -1;
     }
     .breakdown-panel {
       min-height: 188px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
       padding: 12px 14px;
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,.12);
@@ -295,7 +307,7 @@
 
     .sound-axis {
       display: grid;
-      grid-template-columns: 72px 1fr;
+      grid-template-columns: calc(var(--timeline-axis-left) - 43px) minmax(0, 1fr);
       gap: 8px;
       margin-top: 10px;
       color: rgba(255,255,255,.72);
@@ -309,7 +321,7 @@
     }
     .sound-row {
       display: grid;
-      grid-template-columns: 72px 1fr;
+      grid-template-columns: calc(var(--timeline-axis-left) - 43px) minmax(0, 1fr);
       gap: 8px;
       align-items: center;
       margin: 11px 0;
@@ -321,6 +333,7 @@
     }
     .timeline-track {
       position: relative;
+      min-width: 0;
       min-height: 24px;
       border-left: 1px solid rgba(255,255,255,.16);
       border-bottom: 1px solid rgba(255,255,255,.07);
@@ -329,7 +342,7 @@
       position: absolute;
       top: 2px;
       height: 20px;
-      min-width: 48px;
+      min-width: 0;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -348,16 +361,21 @@
 
     .composition-layout {
       display: grid;
-      grid-template-columns: 150px 1fr;
+      grid-template-columns: minmax(112px, 142px) minmax(0, 1fr);
       align-items: center;
       gap: 10px;
-      height: 146px;
+      min-height: 146px;
     }
     .donut-wrap {
-      width: 142px;
+      width: min(142px, 100%);
       height: 142px;
       display: grid;
       place-items: center;
+    }
+    #soundCompositionChart svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
     }
     .composition-legend,
     .top-list {
@@ -366,6 +384,7 @@
       gap: 14px;
       font-size: 12px;
       color: rgba(255,255,255,.82);
+      min-width: 0;
     }
     .dot {
       display: inline-block;
@@ -381,9 +400,16 @@
 
     .top-row {
       display: grid;
-      grid-template-columns: 24px 1fr 118px 42px;
+      grid-template-columns: 24px minmax(0, 1fr) minmax(54px, 118px) 38px;
       align-items: center;
       gap: 10px;
+      min-width: 0;
+    }
+    .top-row > span:nth-child(2) {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .top-icon {
       width: 24px;
@@ -448,6 +474,7 @@
       .export-button { justify-self: center; margin-top: 0; }
       .overview-grid,
       .breakdown-grid { grid-template-columns: 1fr; }
+      .breakdown-panel:first-child { grid-column: auto; }
       .metric-card { grid-template-columns: 112px 1fr; }
       .timeline-chart { height: 360px; }
       .system-loop-footer { flex-wrap: wrap; }
@@ -648,6 +675,42 @@
       stability: 65
     };
     const ATTENTION_DOWN_TRIGGER_DELTA = -4;
+    let lastRenderedSummary = null;
+    let summaryResizeTimer = null;
+    const SUMMARY_SCENE_BACKGROUNDS = [
+      {
+        keywords: ["night forest", "forest at night", "night woods", "夜晚森林", "夜森林"],
+        url: "https://images.unsplash.com/photo-1511497584788-876760111969?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["ocean", "beach", "sea", "seaside", "coast", "shore", "wave", "海洋", "海边", "沙滩", "海浪"],
+        url: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["rain", "rainy", "storm", "thunder", "雨", "暴雨", "雷雨"],
+        url: "https://images.unsplash.com/photo-1519692933481-e162a57d6721?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["mountain", "alpine", "peak", "cliff", "山", "山峰", "高山"],
+        url: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["snow", "snowy", "winter", "ice", "雪", "冬天", "冰川"],
+        url: "https://images.unsplash.com/photo-1483664852095-d6cc6870702d?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["city", "urban", "street", "downtown", "城市", "都市", "街道"],
+        url: "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["desert", "dune", "sand", "沙漠", "沙丘"],
+        url: "https://images.unsplash.com/photo-1509316975850-ff9c5deb0cd9?auto=format&fit=crop&w=2400&q=88"
+      },
+      {
+        keywords: ["forest", "rainforest", "woods", "woodland", "jungle", "tree", "森林", "雨林", "树林"],
+        url: "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=2400&q=88"
+      }
+    ];
     const EMPTY_SUMMARY_DATA = {
       no_data: true,
       session: { duration_sec: 0 },
@@ -664,6 +727,17 @@
     document.addEventListener("DOMContentLoaded", async () => {
       const data = await loadSummaryData();
       renderSummary(data);
+    });
+    window.addEventListener("resize", () => {
+      clearTimeout(summaryResizeTimer);
+      summaryResizeTimer = setTimeout(() => {
+        if (!lastRenderedSummary) return;
+        renderMentalTimeline(
+          lastRenderedSummary.mental_timeline || [],
+          lastRenderedSummary.audio_events || [],
+          lastRenderedSummary.session?.duration_sec || 0
+        );
+      }, 120);
     });
 
     async function loadSummaryData() {
@@ -910,6 +984,8 @@
 
     function renderSummary(data) {
       const safe = data || EMPTY_SUMMARY_DATA;
+      lastRenderedSummary = safe;
+      applySceneBackground(safe.session);
       renderMetrics(safe.metrics || EMPTY_SUMMARY_DATA.metrics);
       setText("ai-summary-text", safe.ai_summary || EMPTY_SUMMARY_DATA.ai_summary);
       renderMentalTimeline(safe.mental_timeline || [], safe.audio_events || [], safe.session?.duration_sec || 0);
@@ -917,6 +993,24 @@
       renderComposition(safe.audio_composition || EMPTY_SUMMARY_DATA.audio_composition);
       renderTopAudioElements(safe.top_audio_elements || []);
       setText("insightText", safe.insight || EMPTY_SUMMARY_DATA.insight);
+    }
+
+    function applySceneBackground(session) {
+      const prompt = String(session?.prompt || "").toLowerCase();
+      const sceneType = String(session?.scene_type || "").toLowerCase().replace(/[_-]+/g, " ");
+      const sceneDescription = `${prompt} ${sceneType}`;
+      const match = SUMMARY_SCENE_BACKGROUNDS.find(item =>
+        item.keywords.some(keyword => matchesSceneKeyword(sceneDescription, keyword))
+      );
+      if (match) {
+        document.documentElement.style.setProperty("--summary-scene-img", `url("${match.url}")`);
+      }
+    }
+
+    function matchesSceneKeyword(description, keyword) {
+      if (/[^\x00-\x7F]/.test(keyword)) return description.includes(keyword);
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(^|[^a-z])${escaped}([^a-z]|$)`, "i").test(description);
     }
 
     function renderMetrics(metrics) {
@@ -944,7 +1038,19 @@
       const maxT = Math.max(duration || 1, ...safePoints.map(p => p.time_sec || 0), 1);
       const w = 1320;
       const h = 350;
-      const pad = { l: 42, r: 24, t: 28, b: 148 };
+      const axisLeftPx = Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--timeline-axis-left")
+      ) || 115;
+      const sectionLeftPaddingPx = Number.parseFloat(
+        getComputedStyle(el.closest(".timeline-section")).paddingLeft
+      ) || 24;
+      const svgWidthPx = Math.max(1, el.clientWidth);
+      const pad = {
+        l: ((axisLeftPx - sectionLeftPaddingPx) / svgWidthPx) * w,
+        r: 24,
+        t: 28,
+        b: 148
+      };
       const chartW = w - pad.l - pad.r;
       const chartH = h - pad.t - pad.b;
       const x = t => pad.l + (t / maxT) * chartW;
@@ -1064,27 +1170,36 @@
 
     function renderAudioTimeline(items, duration) {
       const safeItems = Array.isArray(items) ? items : [];
-      const total = Math.max(duration || 1, ...safeItems.map(i => i.end_sec || 0), 1);
+      const declaredDuration = Number(duration);
+      const fallbackDuration = Math.max(...safeItems.map(i => Number(i.end_sec) || 0), 1);
+      const total = Math.max(declaredDuration > 0 ? declaredDuration : fallbackDuration, 1);
+      const boundedItems = safeItems.map(item => {
+        const start = clamp(Number(item.start_sec) || 0, 0, total);
+        const end = clamp(Number(item.end_sec) || 0, 0, total);
+        return { ...item, start_sec: start, end_sec: end };
+      }).filter(item => item.end_sec > item.start_sec);
       const scale = document.getElementById("sound-time-scale");
       scale.innerHTML = [0, .2, .4, .6, .8, 1].map(p => `<span>${formatTime(total * p)}</span>`).join("");
       ["ambient", "event", "action"].forEach(layer => {
         const track = document.getElementById(`track-${layer}`);
-        const layerItems = layoutAudioBars(safeItems.filter(i => normalizeLayer(i.layer) === layer), total);
+        const layerItems = layoutAudioBars(boundedItems.filter(i => normalizeLayer(i.layer) === layer));
         const laneCount = Math.max(1, ...layerItems.map(item => item.lane + 1));
         track.style.height = `${laneCount * 26}px`;
         track.innerHTML = layerItems.length ? layerItems.map(item => {
           const left = clamp(Number(item.start_sec) / total * 100, 0, 100);
-          const width = clamp((Number(item.end_sec) - Number(item.start_sec)) / total * 100, 6, 100 - left);
+          const available = Math.max(0, 100 - left);
+          const actualWidth = (Number(item.end_sec) - Number(item.start_sec)) / total * 100;
+          const width = Math.min(available, Math.max(actualWidth, Math.min(1.25, available)));
           return `<div class="sound-bar ${layer}" title="${escapeHtml(item.label)}" style="left:${left}%;width:${width}%;top:${2 + item.lane * 26}px">${escapeHtml(item.label)}</div>`;
         }).join("") : `<div style="color:rgba(255,255,255,.32);font-size:12px;padding-top:4px;">No real ${layer} timeline</div>`;
       });
     }
 
-    function layoutAudioBars(items, total) {
+    function layoutAudioBars(items) {
       const lanes = [];
       return [...items].sort((a, b) => Number(a.start_sec) - Number(b.start_sec)).map(item => {
         const start = Number(item.start_sec) || 0;
-        const end = Math.max(start + 1, Number(item.end_sec) || total);
+        const end = Number(item.end_sec) || start;
         let lane = lanes.findIndex(laneEnd => start >= laneEnd);
         if (lane < 0) {
           lane = lanes.length;

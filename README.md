@@ -5,6 +5,9 @@ NeuroScape is a local prototype for EEG-adaptive spatial audio meditation. A use
 ## Current Flow
 
 1. The user enters a meditation prompt in the Flask UI.
+   The meditation duration defaults to 10 minutes and can be changed on the
+   prompt screen. Elapsed meditation time starts only after the first valid EEG
+   sample is received; reaching the target ends the session automatically.
 2. `scripts/scene_logic.py` generates an initial scene with mock sound assets.
 3. EEG data is processed as sliding windows:
    - CSV mode reads `EEG_FILE` from `.env`.
@@ -90,6 +93,20 @@ Generated session artifacts live under `outputs/`:
 - `eeg_window_XX_interpretation.json`: per-window mental-state interpretation.
 - `eeg_window_XX_scene_update.json`: per-window adapted scene.
 - `session_dashboard_summary.json`: saved summary data used by `/summary`.
+- `sessions/YYYYMMDD_HHMMSS_session_NNN/`: immutable archive created whenever
+  `/api/end_session` is called. Each archive includes the original prompt,
+  session metadata, recorded or realtime EEG data, window payloads, LLM
+  input/output traces and prompt templates, full scene/audio action history,
+  Unity command history, dashboard data, and a file manifest. Starting the next
+  meditation clears only the working output files and keeps these archives.
+  Realtime archives contain both `realtime_eeg_raw.csv` (the synchronized
+  band-feature stream used by NeuroScape) and `mind_monitor_osc_raw.jsonl`
+  (every original OSC address and argument received from Mind Monitor, before
+  averaging, filtering, or feature extraction). They also contain
+  `mind_monitor_record_compatible.csv`, reconstructed with the same columns as
+  a Mind Monitor Record upload. When OSC supplies one aggregate value for a
+  frequency band, that value is copied into its four channel columns; the
+  companion schema JSON records this conversion.
 - `llm_payloads.json` / `llm_payloads.jsonl`: realtime pipeline payload logs.
 - `sliding_window_features.csv`: realtime feature table.
 - `realtime_payload_history.json`: recent realtime payload history.

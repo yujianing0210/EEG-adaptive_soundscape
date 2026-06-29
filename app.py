@@ -1,11 +1,14 @@
 from __future__ import annotations
 import copy
+import csv
 import json
 import math
 import os
+import shutil
 import threading
 import time
 from bisect import bisect_left
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from typing import Dict, Any, Optional
@@ -26,6 +29,7 @@ from scripts.eeg_pipeline import (
     STEP_SEC,
 )
 from scripts.scene_logic import bootstrap_scene, interpret_window, adapt_scene
+from scripts.mind_monitor_record import convert_osc_jsonl_to_mind_monitor_csv
 from lib.mock_sound_library import load_audio_library
 from translator import scene_to_commands
 from muse_realtime import (
@@ -34,6 +38,7 @@ from muse_realtime import (
     get_realtime_payload_history,
     get_realtime_diagnostics,
     get_latest_realtime_sample,
+    get_realtime_raw_rows,
     start_realtime_session,
     stop_realtime_session,
 )
@@ -49,7 +54,7 @@ STATE: Dict[str, Any] = {
     "windows": [],
     "current_idx": -1,
     "mental_history": [],
-    "eeg_mode": "recorded",
+    "eeg_mode": "realtime",
     "realtime_active": False,
     "realtime_summary": None,
     "last_summary_at": None,
@@ -60,6 +65,11 @@ STATE: Dict[str, Any] = {
     "eeg_sample_times": [],
     "eeg_sample_file": None,
     "session_id": 0,
+    "session_started_at": None,
+    "eeg_started_at": None,
+    "meditation_duration_sec": 600,
+    "end_reason": None,
+    "session_archive": None,
     "adaptation_pending": 0,
 }
 
@@ -70,6 +80,8 @@ REALTIME_CONSUMER_LOCK = threading.Lock()
 
 OUTPUTS = Path("outputs")
 OUTPUTS.mkdir(exist_ok=True)
+SESSION_ARCHIVES = OUTPUTS / "sessions"
+SESSION_ARCHIVES.mkdir(exist_ok=True)
 
 SESSION_OUTPUT_PATTERNS = (
     "initial_scene.json",
@@ -106,6 +118,282 @@ def clear_session_outputs():
                     app.logger.warning("Could not remove stale output %s: %s", path, exc)
 
 
+def _write_archive_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+
+def _new_session_archive_dir() -> Path:
+    started = STATE.get("session_started_at")
+    try:
+        stamp = datetime.fromisoformat(str(started)).strftime("%Y%m%d_%H%M%S")
+    except (TypeError, ValueError):
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    session_id = int(STATE.get("session_id") or 0)
+    base = SESSION_ARCHIVES / f"{stamp}_session_{session_id:03d}"
+    candidate = base
+    suffix = 2
+    while candidate.exists():
+        candidate = Path(f"{base}_{suffix}")
+        suffix += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def _wait_for_pending_adaptations(timeout_sec: float = 15.0) -> None:
+    deadline = time.time() + timeout_sec
+    while int(STATE.get("adaptation_pending") or 0) > 0 and time.time() < deadline:
+        time.sleep(0.05)
+    if int(STATE.get("adaptation_pending") or 0) > 0:
+        app.logger.warning(
+            "Archiving session with %s scene adaptation(s) still pending.",
+            STATE.get("adaptation_pending"),
+        )
+
+
+def _audio_action_timeline() -> list[dict]:
+    scenes = copy.deepcopy(STATE.get("scene_history") or [])
+    mental_items = [
+        item for item in copy.deepcopy(STATE.get("mental_history") or [])
+        if not item.get("auto_summary")
+    ]
+    timeline = []
+    previous_active: set[str] = set()
+    for idx, scene in enumerate(scenes):
+        world = scene.get("world_state") or {}
+        active = {str(item) for item in (world.get("active_sources") or [])}
+        mental = mental_items[idx - 1] if idx > 0 and idx - 1 < len(mental_items) else {}
+        elapsed = mental.get("session_elapsed_sec", 0) if idx > 0 else 0
+        timeline.append({
+            "sequence": idx,
+            "time_sec": elapsed,
+            "window_id": mental.get("window_id"),
+            "phase": world.get("current_phase"),
+            "mental_state": mental.get("llm_state") or mental.get("rule_state"),
+            "scene_implication": mental.get("scene_implication"),
+            "active_sources": sorted(active),
+            "sources_added": sorted(active - previous_active),
+            "sources_removed": sorted(previous_active - active),
+            "sources": scene.get("sources") or [],
+            "world_state": world,
+        })
+        previous_active = active
+    return timeline
+
+
+def _llm_trace() -> list[dict]:
+    payload_by_window = {}
+    for payload in copy.deepcopy(STATE.get("windows") or []):
+        window_id = payload.get("window_id")
+        if window_id is not None and str(window_id) not in payload_by_window:
+            payload_by_window[str(window_id)] = payload
+
+    trace = []
+    for sequence, item in enumerate(copy.deepcopy(STATE.get("mental_history") or [])):
+        window_id = item.get("window_id")
+        trace.append({
+            "sequence": sequence,
+            "kind": "rolling_summary" if item.get("auto_summary") else "eeg_window_interpretation",
+            "window_id": window_id,
+            "time_sec": item.get("session_elapsed_sec"),
+            "llm_input": payload_by_window.get(str(window_id)),
+            "llm_output": item.get("mental_state") or {
+                "state_label": item.get("llm_state"),
+                "trend": item.get("trend"),
+                "confidence": item.get("confidence"),
+                "interpretation": item.get("interpretation"),
+                "scene_implication": item.get("scene_implication"),
+            },
+        })
+    return trace
+
+
+def _unity_command_timeline() -> list[dict]:
+    audio_timeline = _audio_action_timeline()
+    previous_ids: set[str] = set()
+    commands = []
+    for idx, scene in enumerate(copy.deepcopy(STATE.get("scene_history") or [])):
+        command_json, previous_ids = scene_to_commands(scene, previous_ids)
+        timing = audio_timeline[idx] if idx < len(audio_timeline) else {}
+        commands.append({
+            "sequence": idx,
+            "time_sec": timing.get("time_sec", 0),
+            "window_id": timing.get("window_id"),
+            "commands": command_json.get("commands", []),
+        })
+    return commands
+
+
+def _write_realtime_eeg_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    preferred = [
+        "time_sec", "Delta", "Theta", "Alpha", "Beta", "Gamma",
+        "Accelerometer_X", "Accelerometer_Y", "Accelerometer_Z", "acc_mag",
+        "Gyro_X", "Gyro_Y", "Gyro_Z", "gyro_mag",
+        "HeadBandOn", "HSI_TP9", "HSI_AF7", "HSI_AF8", "HSI_TP10",
+    ]
+    present = {key for row in rows for key in row}
+    fieldnames = [key for key in preferred if key in present]
+    fieldnames.extend(sorted(present - set(fieldnames)))
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        if not fieldnames:
+            f.write("")
+            return
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _copy_session_artifacts(archive_dir: Path, eeg_mode: str) -> None:
+    common_patterns = SESSION_OUTPUT_PATTERNS
+    realtime_names = {
+        "sliding_window_features.csv",
+        "sliding_window_features_with_llm.csv",
+        "llm_payloads.json",
+        "llm_payloads.jsonl",
+        "mind_monitor_osc_raw.jsonl",
+    }
+    for source in OUTPUTS.iterdir():
+        if not source.is_file():
+            continue
+        is_common = any(source.match(pattern) for pattern in common_patterns)
+        if not is_common and not (eeg_mode == "realtime" and source.name in realtime_names):
+            continue
+        if "summary" in source.name and not source.name.startswith("realtime_"):
+            group = "summary"
+        elif "payload" in source.name or "interpretation" in source.name or source.name.startswith("realtime_summary"):
+            group = "llm"
+        elif "eeg" in source.name or "sliding_window" in source.name or "mind_monitor" in source.name:
+            group = "eeg"
+        elif "unity" in source.name:
+            group = "unity"
+        else:
+            group = "scene"
+        destination = archive_dir / group / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def archive_current_session(summary: dict) -> Path:
+    """Create an immutable, self-contained record of the just-ended meditation."""
+    archive_dir = _new_session_archive_dir()
+    eeg_mode = str(STATE.get("eeg_mode") or "realtime")
+    ended_at = datetime.now().astimezone().isoformat()
+
+    (archive_dir / "prompt.txt").write_text(str(STATE.get("prompt") or ""), encoding="utf-8")
+    current_idx = int(STATE.get("current_idx", -1))
+    metadata = {
+        "archive_schema_version": 1,
+        "session_id": STATE.get("session_id"),
+        "started_at": STATE.get("session_started_at"),
+        "eeg_started_at": STATE.get("eeg_started_at"),
+        "ended_at": ended_at,
+        "eeg_mode": eeg_mode,
+        "meditation_duration_sec": STATE.get("meditation_duration_sec"),
+        "end_reason": STATE.get("end_reason"),
+        "prompt": STATE.get("prompt"),
+        "scene_type": (STATE.get("scene") or {}).get("scene_type"),
+        "processed_window_count": max(0, current_idx + 1),
+        "mental_record_count": len(STATE.get("mental_history") or []),
+        "scene_version_count": len(STATE.get("scene_history") or []),
+        "config": {
+            "eeg_file": STATE.get("eeg_file"),
+            "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            "window_sec": (
+                current_realtime_eeg_config()[0]
+                if eeg_mode == "realtime"
+                else current_recorded_eeg_config()[1]
+            ),
+            "step_sec": current_session_step_sec(),
+            "realtime_warmup_sec": current_realtime_eeg_config()[2] if eeg_mode == "realtime" else None,
+            "realtime_buffer_sec": current_realtime_eeg_config()[3] if eeg_mode == "realtime" else None,
+        },
+    }
+    if eeg_mode == "realtime":
+        metadata["realtime_diagnostics"] = get_realtime_diagnostics()
+
+    _write_archive_json(archive_dir / "session_metadata.json", metadata)
+    _write_archive_json(archive_dir / "process" / "session_state.json", {
+        "prompt": STATE.get("prompt"),
+        "eeg_mode": eeg_mode,
+        "eeg_started_at": STATE.get("eeg_started_at"),
+        "meditation_duration_sec": STATE.get("meditation_duration_sec"),
+        "end_reason": STATE.get("end_reason"),
+        "current_idx": STATE.get("current_idx"),
+        "windows": STATE.get("windows") or [],
+        "mental_history": STATE.get("mental_history") or [],
+        "scene_history": STATE.get("scene_history") or [],
+        "final_active_scene": (STATE.get("scene_history") or [None])[-1],
+        "final_stopped_scene": STATE.get("scene"),
+    })
+    _write_archive_json(archive_dir / "process" / "llm_trace.json", _llm_trace())
+    _write_archive_json(archive_dir / "process" / "audio_action_timeline.json", _audio_action_timeline())
+    _write_archive_json(archive_dir / "unity" / "unity_command_timeline.json", _unity_command_timeline())
+    _write_archive_json(archive_dir / "scene" / "audio_library_snapshot.json", load_audio_library())
+    _write_archive_json(archive_dir / "summary" / "dashboard_raw.json", summary)
+    _write_archive_json(
+        archive_dir / "summary" / "dashboard_api.json",
+        _dashboard_to_session_summary(summary),
+    )
+
+    if eeg_mode == "realtime":
+        _write_realtime_eeg_csv(
+            archive_dir / "eeg" / "realtime_eeg_raw.csv",
+            get_realtime_raw_rows(),
+        )
+        _write_archive_json(archive_dir / "eeg" / "mind_monitor_osc_raw_schema.json", {
+            "format": "JSON Lines; one received OSC message per line",
+            "fields": {
+                "received_at_unix": "Local receiver Unix timestamp in seconds",
+                "session_elapsed_sec": "Seconds since realtime session collection started",
+                "address": "Original Mind Monitor OSC address",
+                "args": "Original OSC arguments in original order; byte values use lossless hex encoding",
+            },
+            "processing": "No channel averaging, feature extraction, filtering, or resampling is applied.",
+        })
+    else:
+        eeg_source = Path(str(STATE.get("eeg_file") or ""))
+        if eeg_source.is_file():
+            destination = archive_dir / "eeg" / f"recorded_input{eeg_source.suffix or '.csv'}"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(eeg_source, destination)
+
+    _copy_session_artifacts(archive_dir, eeg_mode)
+    if eeg_mode == "realtime":
+        raw_stream_archive = archive_dir / "eeg" / "mind_monitor_osc_raw.jsonl"
+        if not raw_stream_archive.exists():
+            raw_stream_archive.write_text("", encoding="utf-8")
+        convert_osc_jsonl_to_mind_monitor_csv(
+            raw_stream_archive,
+            archive_dir / "eeg" / "mind_monitor_record_compatible.csv",
+            archive_dir / "eeg" / "mind_monitor_record_compatible_schema.json",
+        )
+    prompt_dir = Path("prompts")
+    if prompt_dir.is_dir():
+        for prompt_file in prompt_dir.glob("*.md"):
+            destination = archive_dir / "llm" / "prompts" / prompt_file.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(prompt_file, destination)
+
+    files = [
+        {
+            "path": path.relative_to(archive_dir).as_posix(),
+            "bytes": path.stat().st_size,
+        }
+        for path in sorted(archive_dir.rglob("*"))
+        if path.is_file()
+    ]
+    _write_archive_json(archive_dir / "manifest.json", {
+        "archive_schema_version": 1,
+        "created_at": ended_at,
+        "file_count": len(files),
+        "files": files,
+    })
+    STATE["session_archive"] = str(archive_dir.resolve())
+    return archive_dir
+
+
 def current_recorded_eeg_config() -> tuple[str, int, int]:
     """Read recorded EEG config at action time so .env edits take effect."""
     load_dotenv(dotenv_path=Path(".env"), override=True)
@@ -121,6 +409,14 @@ def _env_int(name: str, default: int) -> int:
     if value is None or str(value).strip() == "":
         return int(default)
     return int(value)
+
+
+def _meditation_duration_sec(value: Any, default_minutes: float = 10.0) -> int:
+    try:
+        minutes = float(value)
+    except (TypeError, ValueError):
+        minutes = default_minutes
+    return int(round(max(1.0, min(180.0, minutes)) * 60))
 
 
 def current_realtime_eeg_config() -> tuple[int, int, int, int]:
@@ -290,6 +586,11 @@ def _enqueue_scene_adaptation(idx: int, mental: dict):
 
 
 def _process_eeg_payload(payload: dict, session_elapsed_sec: Optional[int] = None, adapt_async: bool = True) -> dict:
+    if _has_valid_eeg_band_signal(payload.get("current_features") or {}):
+        STATE["eeg_started_at"] = (
+            STATE.get("eeg_started_at")
+            or datetime.now().astimezone().isoformat()
+        )
     next_idx = STATE["current_idx"] + 1
     mental = _interpret_payload(payload)
     write_json(mental, f"eeg_window_{next_idx:02d}_interpretation.json")
@@ -540,13 +841,29 @@ def _payload_time_end(payload: dict, fallback_start: int, fallback_step_sec: int
     return fallback_start + int(payload.get("step_sec") or fallback_step_sec)
 
 
+def _current_eeg_elapsed_sec() -> Optional[int]:
+    started_at = STATE.get("eeg_started_at")
+    if not started_at:
+        return None
+    try:
+        started = datetime.fromisoformat(str(started_at))
+        elapsed = (datetime.now().astimezone() - started).total_seconds()
+        return max(0, int(round(elapsed)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _mental_history_item(payload: dict, mental: dict, next_idx: int, session_elapsed_sec: Optional[int] = None) -> dict:
     configured_step_sec = int(payload.get("step_sec") or current_session_step_sec())
     if session_elapsed_sec is not None:
         elapsed = session_elapsed_sec
     elif payload.get("source") == "realtime_muse" or STATE.get("eeg_mode") == "realtime":
-        fallback_start = next_idx * configured_step_sec
-        elapsed = _payload_time_end(payload, fallback_start, configured_step_sec)
+        eeg_elapsed = _current_eeg_elapsed_sec()
+        if eeg_elapsed is not None:
+            elapsed = eeg_elapsed
+        else:
+            fallback_start = next_idx * configured_step_sec
+            elapsed = _payload_time_end(payload, fallback_start, configured_step_sec)
     else:
         elapsed = next_idx * configured_step_sec
     mental = _enrich_mental_from_payload(payload, mental)
@@ -703,9 +1020,20 @@ def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
         if idx + 1 < len(timeline):
             item["end_sec"] = max(item["time_sec"], timeline[idx + 1]["time_sec"])
 
-    if ended_elapsed_sec is not None and timeline:
+    if ended_elapsed_sec is not None:
         ended_elapsed_sec = max(0, int(ended_elapsed_sec))
-        timeline[-1]["end_sec"] = max(timeline[-1]["time_sec"], ended_elapsed_sec)
+        bounded_timeline = []
+        for item in timeline:
+            item_start = max(0, int(item.get("time_sec") or 0))
+            if item_start > ended_elapsed_sec:
+                continue
+            item["time_sec"] = item_start
+            item["end_sec"] = min(
+                ended_elapsed_sec,
+                max(item_start, int(item.get("end_sec") or item_start)),
+            )
+            bounded_timeline.append(item)
+        timeline = bounded_timeline
 
     state_counts: Dict[str, int] = {}
     for item in timeline:
@@ -731,6 +1059,9 @@ def _build_dashboard_summary(ended_elapsed_sec: Optional[int] = None) -> dict:
     return {
         "prompt": STATE.get("prompt"),
         "scene_type": (STATE.get("scene") or {}).get("scene_type") or recovered_scene_type,
+        "meditation_duration_sec": STATE.get("meditation_duration_sec", 600),
+        "eeg_started_at": STATE.get("eeg_started_at"),
+        "end_reason": STATE.get("end_reason"),
         "ended_at": __import__("time").time(),
         "duration_sec": ended_elapsed_sec if ended_elapsed_sec is not None else (timeline[-1].get("end_sec", timeline[-1]["time_sec"]) if timeline else 0),
         "sample_interval_sec": configured_step_sec,
@@ -831,12 +1162,25 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
         item for item in (summary.get("timeline") or [])
         if item.get("window_id") is not None and item.get("scores")
     ]
+    declared_duration = int(summary.get("duration_sec") or 0)
+    if summary.get("ended_at") is not None and declared_duration > 0:
+        timeline = [
+            {
+                **item,
+                "time_sec": min(declared_duration, max(0, int(item.get("time_sec") or 0))),
+                "end_sec": min(declared_duration, max(0, int(item.get("end_sec") or 0))),
+            }
+            for item in timeline
+        ]
     if not timeline:
         return {
             "no_data": True,
             "reason": summary.get("reason") or "No processed EEG windows are available yet.",
             "session": {
                 "duration_sec": 0,
+                "meditation_duration_sec": summary.get("meditation_duration_sec"),
+                "eeg_started_at": summary.get("eeg_started_at"),
+                "end_reason": summary.get("end_reason"),
                 "prompt": summary.get("prompt"),
                 "scene_type": summary.get("scene_type"),
             },
@@ -934,6 +1278,8 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
         for source in sources:
             if not source.get("active", True):
                 continue
+            if end <= start:
+                continue
             source_id = source.get("asset_id") or source.get("id")
             if not source_id:
                 continue
@@ -1019,6 +1365,9 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
     return {
         "session": {
             "duration_sec": duration,
+            "meditation_duration_sec": summary.get("meditation_duration_sec"),
+            "eeg_started_at": summary.get("eeg_started_at"),
+            "end_reason": summary.get("end_reason"),
             "prompt": summary.get("prompt"),
             "scene_type": summary.get("scene_type"),
         },
@@ -1044,13 +1393,33 @@ def _dashboard_to_session_summary(summary: dict) -> dict:
     }
 
 
-def _make_stopped_scene(scene: Optional[dict]) -> dict:
+def _scene_source_ids(scene: Optional[dict]) -> set[str]:
+    if not scene:
+        return set()
+    ids = {
+        str(source_id)
+        for source_id in ((scene.get("world_state") or {}).get("active_sources") or [])
+        if source_id
+    }
+    for source in scene.get("sources") or []:
+        source_id = source.get("source_id") or source.get("id") or source.get("asset_id")
+        if source_id:
+            ids.add(str(source_id))
+    return ids
+
+
+def _make_stopped_scene(scene: Optional[dict], scene_history: Optional[list[dict]] = None) -> dict:
     stopped = dict(scene or {})
+    stop_source_ids = _scene_source_ids(scene)
+    for historical_scene in scene_history or []:
+        stop_source_ids.update(_scene_source_ids(historical_scene))
     world_state = dict(stopped.get("world_state") or {})
     world_state["active_sources"] = []
     world_state["session_status"] = "ended"
+    world_state["stop_source_ids"] = sorted(stop_source_ids)
     stopped["world_state"] = world_state
     stopped["sources"] = []
+    stopped["stop_source_ids"] = sorted(stop_source_ids)
     stopped["session_status"] = "ended"
     return stopped
 
@@ -1187,12 +1556,13 @@ def index():
 @app.post("/bootstrap")
 def do_bootstrap():
     user_prompt = request.form.get("prompt", "").strip()
-    eeg_mode = request.form.get("eeg_mode", "recorded")
+    eeg_mode = request.form.get("eeg_mode", "realtime")
+    duration_minutes = request.form.get("duration_minutes", 10)
     if not user_prompt:
         flash("Please enter a prompt.")
         return redirect(url_for("index"))
 
-    bootstrap_session(user_prompt, eeg_mode)
+    bootstrap_session(user_prompt, eeg_mode, duration_minutes)
     if eeg_mode == "realtime":
         flash("Realtime EEG session started. Wait for live windows to arrive.")
     else:
@@ -1200,7 +1570,11 @@ def do_bootstrap():
     return redirect(url_for("index"))
 
 
-def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str, Any]:
+def bootstrap_session(
+    user_prompt: str,
+    eeg_mode: str = "realtime",
+    duration_minutes: Any = 10,
+) -> Dict[str, Any]:
     stop_realtime_session()
     clear_session_outputs()
 
@@ -1214,6 +1588,11 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
     STATE["session_ended"] = False
     STATE["dashboard_summary"] = None
     STATE["session_id"] = int(STATE.get("session_id", 0)) + 1
+    STATE["session_started_at"] = datetime.now().astimezone().isoformat()
+    STATE["eeg_started_at"] = None
+    STATE["meditation_duration_sec"] = _meditation_duration_sec(duration_minutes)
+    STATE["end_reason"] = None
+    STATE["session_archive"] = None
     STATE["adaptation_pending"] = 0
     STATE["eeg_file"] = current_recorded_eeg_config()[0]
     STATE["eeg_samples"] = []
@@ -1267,11 +1646,12 @@ def bootstrap_session(user_prompt: str, eeg_mode: str = "recorded") -> Dict[str,
 def api_bootstrap():
     data = request.get_json(silent=True) or {}
     user_prompt = (data.get("prompt") or "").strip()
-    eeg_mode = data.get("eeg_mode", "recorded")
+    eeg_mode = data.get("eeg_mode", "realtime")
+    duration_minutes = data.get("duration_minutes", 10)
     if not user_prompt:
         return jsonify({"error": "Please enter a prompt."}), 400
 
-    scene = bootstrap_session(user_prompt, eeg_mode)
+    scene = bootstrap_session(user_prompt, eeg_mode, duration_minutes)
     return jsonify({
         "scene": scene,
         "prompt": STATE["prompt"],
@@ -1281,6 +1661,7 @@ def api_bootstrap():
         "total_windows": len(STATE["windows"]),
         "mental_history": STATE["mental_history"],
         "eeg_step_sec": current_session_step_sec(),
+        "meditation_duration_sec": STATE["meditation_duration_sec"],
         "realtime_active": STATE["realtime_active"],
     })
 
@@ -1394,6 +1775,8 @@ def _state_snapshot():
         "current_idx": idx,
         "total_windows": len(STATE["windows"]),
         "mental_history": STATE["mental_history"][-10:],
+        "eeg_started_at": STATE.get("eeg_started_at"),
+        "meditation_duration_sec": STATE.get("meditation_duration_sec", 600),
         "adaptation_pending": int(STATE.get("adaptation_pending", 0)),
         "done": False,
         "error": None,
@@ -1453,12 +1836,29 @@ def api_state():
     return jsonify(_state_snapshot())
 
 
+@app.post("/api/eeg_started")
+def api_eeg_started():
+    if not STATE.get("prompt") or STATE.get("session_ended"):
+        return jsonify({"error": "No active meditation session."}), 409
+    if STATE.get("eeg_started_at") is None:
+        STATE["eeg_started_at"] = datetime.now().astimezone().isoformat()
+    return jsonify({
+        "eeg_started_at": STATE["eeg_started_at"],
+        "meditation_duration_sec": STATE.get("meditation_duration_sec", 600),
+    })
+
+
 @app.get("/api/eeg_sample")
 def api_eeg_sample():
     if STATE.get("eeg_mode") == "realtime":
         sample = get_latest_realtime_sample()
         if sample is None:
             return jsonify({"error": "No realtime EEG sample is available yet."}), 404
+        if _has_valid_eeg_band_signal(sample.get("current_features") or {}):
+            STATE["eeg_started_at"] = (
+                STATE.get("eeg_started_at")
+                or datetime.now().astimezone().isoformat()
+            )
         return jsonify(sample)
 
     try:
@@ -1471,6 +1871,11 @@ def api_eeg_sample():
         return jsonify({"error": f"Could not load EEG playback sample: {exc}"}), 500
     if sample is None:
         return jsonify({"error": "No EEG samples are available."}), 404
+    if _has_valid_eeg_band_signal(sample.get("current_features") or {}):
+        STATE["eeg_started_at"] = (
+            STATE.get("eeg_started_at")
+            or datetime.now().astimezone().isoformat()
+        )
     return jsonify(sample)
 
 
@@ -1516,25 +1921,45 @@ def api_end_session():
         ended_elapsed_sec = int(round(float(data.get("elapsed_sec"))))
     except (TypeError, ValueError):
         ended_elapsed_sec = None
-    summary = _build_dashboard_summary(ended_elapsed_sec=ended_elapsed_sec)
-    stop_realtime_session()
-    STATE["session_id"] = int(STATE.get("session_id", 0)) + 1
-    STATE["adaptation_pending"] = 0
-
-    stopped_scene = _make_stopped_scene(STATE.get("scene"))
-    STATE["scene"] = stopped_scene
+    STATE["end_reason"] = str(data.get("end_reason") or "manual")
     STATE["realtime_active"] = False
+    stop_realtime_session()
+    with REALTIME_CONSUMER_LOCK:
+        pass
+    _wait_for_pending_adaptations()
+    summary = _build_dashboard_summary(ended_elapsed_sec=ended_elapsed_sec)
+
+    stopped_scene = _make_stopped_scene(
+        STATE.get("scene"),
+        STATE.get("scene_history") or [],
+    )
+    STATE["scene"] = stopped_scene
     STATE["session_ended"] = True
     STATE["dashboard_summary"] = summary
 
     write_json(summary, "session_dashboard_summary.json")
     write_json(stopped_scene, "current_unity_scene.json")
+    stop_command_json, _ = scene_to_commands(stopped_scene, set())
+
+    archive_path = None
+    archive_error = None
+    try:
+        archive_path = archive_current_session(summary)
+    except Exception as exc:
+        archive_error = str(exc)
+        app.logger.exception("Could not archive ended meditation session")
+
+    STATE["session_id"] = int(STATE.get("session_id", 0)) + 1
+    STATE["adaptation_pending"] = 0
 
     return jsonify({
         **_state_snapshot(),
         "active": False,
         "ended": True,
         "dashboard": summary,
+        "unity_commands": stop_command_json.get("commands", []),
+        "session_archive": str(archive_path.resolve()) if archive_path else None,
+        "archive_error": archive_error,
     })
 
 

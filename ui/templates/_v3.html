@@ -9,11 +9,17 @@
     <div class="v3-home-wrap">
       <input class="v3-home-inp" id="v3-prompt" type="text" placeholder="Describe your world..." />
       <div class="v3-mode-toggle" aria-label="EEG data source">
-        <button class="v3-mode-btn on" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
-        <button class="v3-mode-btn" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
+        <button class="v3-mode-btn" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
+        <button class="v3-mode-btn on" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
       </div>
       <button class="v3-circ" onclick="v3Submit()">↑</button>
     </div>
+    <label class="v3-duration-control" for="v3-duration-minutes">
+      <span>Meditation duration</span>
+      <input id="v3-duration-minutes" type="number" min="1" max="180" step="1" value="10" />
+      <span>minutes</span>
+      <small>Timer starts when valid EEG data is first received.</small>
+    </label>
     <div class="v3-examples">
       <div class="v3-eg"><strong>Example 1:</strong><br>I want a forest scene. There are many tall trees and beautiful flowers. I can hear the sound of the wind blowing through the leaves....</div>
       <div class="v3-eg"><strong>Example 2:</strong><br>Any place that can bring me calmness. It must be completely natural, without any traces of human presence.</div>
@@ -38,8 +44,8 @@
     <div class="v3-prev-row">
       <input class="v3-prev-inp" type="text" placeholder="Type your feedback" />
       <div class="v3-mode-toggle" aria-label="EEG data source">
-        <button class="v3-mode-btn on" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
-        <button class="v3-mode-btn" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
+        <button class="v3-mode-btn" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
+        <button class="v3-mode-btn on" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
       </div>
       <button class="v3-circ" style="width:32px;height:32px;font-size:14px;">↑</button>
     </div>
@@ -62,8 +68,8 @@
       <div class="v3-sh-row">
         <input class="v3-sh-inp" id="v3-sess-prompt" type="text" readonly />
         <div class="v3-mode-toggle" aria-label="EEG data source">
-          <button class="v3-mode-btn on" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
-          <button class="v3-mode-btn" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
+          <button class="v3-mode-btn" type="button" data-v3-mode="recorded" onclick="v3SetMode('recorded')">CSV</button>
+          <button class="v3-mode-btn on" type="button" data-v3-mode="realtime" onclick="v3SetMode('realtime')">Muse</button>
         </div>
         <button class="v3-circ" style="width:30px;height:30px;font-size:13px;">↑</button>
       </div>
@@ -136,6 +142,7 @@
 
     <div class="v3-footer">
       <div class="v3-timer" id="v3-timer">00:00:00</div>
+      <div class="v3-timer-meta" id="v3-timer-meta">Waiting for EEG · 10 min target</div>
       <button class="v3-pp" id="v3-pp" onclick="v3TogglePlay()">END</button>
     </div>
   </div><!-- #v3-session -->
